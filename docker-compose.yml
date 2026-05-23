@@ -1,0 +1,11 @@
+services:
+  license-server:
+    build: .
+    image: kiss-license-server:latest
+    container_name: license-server
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/srv/data
