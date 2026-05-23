@@ -22,10 +22,11 @@ Commands:
 """
 from __future__ import annotations
 
+import html
 import time
 from datetime import datetime, timezone
 from functools import wraps
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 from telegram import Update
 from telegram.constants import ParseMode
@@ -37,26 +38,37 @@ from .notifier import Notifier
 
 
 HELP_TEXT = (
-    "*KISS License Bot*\n"
+    "<b>License Gabot</b>\n"
+    "<i>License server management over Telegram.</i>\n"
     "\n"
-    "*License management*\n"
-    "`/new [product] [days] [machines]` — create (days 0 = lifetime)\n"
-    "`/list [n]` — recent licenses\n"
-    "`/info <KEY>` — details + activations\n"
-    "`/revoke <KEY>` · `/unrevoke <KEY>`\n"
-    "`/extend <KEY> <days>` — extend (0 = lifetime)\n"
-    "`/seats <KEY> <n>` — set machine limit\n"
-    "`/reset <KEY> [machine_id]` — clear activation(s)\n"
-    "`/delete <KEY>` — delete permanently\n"
-    "\n"
-    "*Usage logs*\n"
-    "`/log [n]` or `/log <KEY> [n]`\n"
-    "`/errors [n]` — failed events only\n"
-    "`/stats <KEY> [days]` — summary (0 = all-time)\n"
-    "`/mute` · `/unmute` — push notifications"
+    "<b>📜 License management</b>\n"
+    "<blockquote>"
+    "<code>/new [product] [days] [machines]</code> — create (days 0 = lifetime)\n"
+    "<code>/list [n]</code> — recent licenses\n"
+    "<code>/info &lt;KEY&gt;</code> — details + activations\n"
+    "<code>/revoke &lt;KEY&gt;</code> · <code>/unrevoke &lt;KEY&gt;</code>\n"
+    "<code>/extend &lt;KEY&gt; &lt;days&gt;</code> — extend (0 = lifetime)\n"
+    "<code>/seats &lt;KEY&gt; &lt;n&gt;</code> — set machine limit\n"
+    "<code>/reset &lt;KEY&gt; [machine_id]</code> — clear activation(s)\n"
+    "<code>/delete &lt;KEY&gt;</code> — delete permanently"
+    "</blockquote>\n"
+    "<b>📊 Usage logs</b>\n"
+    "<blockquote>"
+    "<code>/log [n]</code> or <code>/log &lt;KEY&gt; [n]</code>\n"
+    "<code>/errors [n]</code> — failed events only\n"
+    "<code>/stats &lt;KEY&gt; [days]</code> — summary (0 = all-time)\n"
+    "<code>/mute</code> · <code>/unmute</code> — push notifications"
+    "</blockquote>"
 )
 
 OK_STATUSES = {"ok", "activated", "deactivated"}
+
+
+def _esc(value: Any) -> str:
+    """HTML-escape a dynamic value for safe rendering in Telegram HTML mode."""
+    if value is None or value == "":
+        return "-"
+    return html.escape(str(value), quote=False)
 
 
 def _fmt_ts(ts: int | None) -> str:
@@ -71,13 +83,15 @@ def _fmt_short_ts(ts: int) -> str:
 
 def _fmt_license(lic: dict) -> str:
     return (
-        f"*License* `{lic['key']}`\n"
-        f"Product:  `{lic['product']}`\n"
-        f"Status:   *{lic['status']}*\n"
-        f"Seats:    {lic.get('activations', '?')} / {lic['max_machines']}\n"
-        f"Expires:  {_fmt_ts(lic['expires_at'])}\n"
-        f"Owner:    {lic.get('owner') or '-'}\n"
-        f"Created:  {_fmt_ts(lic['created_at'])}"
+        f"<b>License</b> <code>{_esc(lic['key'])}</code>\n"
+        "<blockquote>"
+        f"<b>Product:</b>  <code>{_esc(lic['product'])}</code>\n"
+        f"<b>Status:</b>   <b>{_esc(lic['status'])}</b>\n"
+        f"<b>Seats:</b>    {lic.get('activations', '?')} / {lic['max_machines']}\n"
+        f"<b>Expires:</b>  {_esc(_fmt_ts(lic['expires_at']))}\n"
+        f"<b>Owner:</b>    {_esc(lic.get('owner'))}\n"
+        f"<b>Created:</b>  {_esc(_fmt_ts(lic['created_at']))}"
+        "</blockquote>"
     )
 
 
@@ -85,11 +99,13 @@ def _fmt_event(e: dict) -> str:
     icon = "✅" if e["status"] in OK_STATUSES else "⚠️"
     key = e["license_key"] or "-"
     short_key = key.split("-")[0] if key != "-" else "-"
-    machine = e["machine_id"] or "-"
+    machine = (e["machine_id"] or "-")[:12]
     return (
-        f"{icon} `{_fmt_short_ts(e['created_at'])}` "
-        f"`{e['event']}/{e['status']}` · "
-        f"key `{short_key}` · m `{machine[:12]}` · ip `{e['ip'] or '-'}`"
+        f"{icon} <code>{_esc(_fmt_short_ts(e['created_at']))}</code> "
+        f"<code>{_esc(e['event'])}/{_esc(e['status'])}</code>\n"
+        f"     <i>key</i> <code>{_esc(short_key)}</code> · "
+        f"<i>m</i> <code>{_esc(machine)}</code> · "
+        f"<i>ip</i> <code>{_esc(e['ip'])}</code>"
     )
 
 
@@ -103,9 +119,10 @@ def _admin_only(admin_ids: set[int]) -> Callable[[Handler], Handler]:
             user = update.effective_user
             if not user or user.id not in admin_ids:
                 if update.effective_message:
+                    uid = user.id if user else "?"
                     await update.effective_message.reply_text(
-                        f"Access denied. Your Telegram ID: `{user.id if user else '?'}`",
-                        parse_mode=ParseMode.MARKDOWN,
+                        f"🚫 <b>Access denied</b>\nYour Telegram ID: <code>{uid}</code>",
+                        parse_mode=ParseMode.HTML,
                     )
                 return
             await fn(update, context)
@@ -124,7 +141,9 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
 
     async def reply(update: Update, text: str) -> None:
         if update.effective_message:
-            await update.effective_message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+            await update.effective_message.reply_text(
+                text, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+            )
 
     @admin
     async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -138,14 +157,14 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
             days = int(args[1]) if len(args) >= 2 else 0
             machines = int(args[2]) if len(args) >= 3 else 1
         except ValueError:
-            await reply(update, "Usage: `/new [product] [days] [machines]`")
+            await reply(update, "<b>Usage:</b> <code>/new [product] [days] [machines]</code>")
             return
         expires_at = int(time.time()) + days * 86400 if days > 0 else None
         lic = await db.create_license(
             product=product, max_machines=machines, expires_at=expires_at,
             created_by=update.effective_user.id if update.effective_user else None,
         )
-        await reply(update, "✅ License created\n\n" + _fmt_license(lic))
+        await reply(update, "✅ <b>License created</b>\n\n" + _fmt_license(lic))
 
     @admin
     async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -155,20 +174,21 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
             n = 10
         rows = await db.list_licenses(limit=max(1, min(n, 50)))
         if not rows:
-            await reply(update, "No licenses yet.")
+            await reply(update, "<i>No licenses yet.</i>")
             return
-        lines = [f"*Recent licenses* (showing {len(rows)})"]
+        lines = [f"<b>📜 Recent licenses</b> <i>({len(rows)})</i>", "<blockquote>"]
         for r in rows:
             lines.append(
-                f"`{r['key']}`\n"
-                f"  {r['product']} · *{r['status']}* · "
-                f"{r['max_machines']} seat · {_fmt_ts(r['expires_at'])}"
+                f"<code>{_esc(r['key'])}</code>\n"
+                f"  {_esc(r['product'])} · <b>{_esc(r['status'])}</b> · "
+                f"{r['max_machines']} seat · {_esc(_fmt_ts(r['expires_at']))}"
             )
+        lines.append("</blockquote>")
         await reply(update, "\n".join(lines))
 
     async def _need_key(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> str | None:
         if not ctx.args:
-            await reply(update, "Provide a key, e.g. `/info ABCDE-12345-...`")
+            await reply(update, "Provide a key, e.g. <code>/info ABCDE-12345-...</code>")
             return None
         return ctx.args[0]
 
@@ -179,24 +199,30 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
             return
         lic = await db.get_license(key)
         if not lic:
-            await reply(update, "Not found.")
+            await reply(update, "<i>Not found.</i>")
             return
         text = _fmt_license(lic)
         acts = await db.list_activations(key)
         if acts:
-            text += "\n\n*Machines*"
+            text += "\n<b>💻 Machines</b>\n<blockquote>"
+            parts = []
             for a in acts:
-                text += f"\n• `{a['machine_id']}`\n  last seen {_fmt_ts(a['last_seen'])}"
+                parts.append(
+                    f"<code>{_esc(a['machine_id'])}</code>\n"
+                    f"  <i>last seen</i> {_esc(_fmt_ts(a['last_seen']))}"
+                )
+            text += "\n".join(parts) + "</blockquote>"
         # last 7 days
         since = int(time.time()) - 7 * 86400
         s = await db.event_stats(key, since=since)
         text += (
-            f"\n\n*Last 7 days*\n"
-            f"Events:  {s['total']}\n"
-            f"Unique machines: {s['distinct_machines']}"
+            "\n<b>📈 Last 7 days</b>\n<blockquote>"
+            f"<b>Events:</b>          {s['total']}\n"
+            f"<b>Unique machines:</b> {s['distinct_machines']}"
         )
         if s["last_seen"]:
-            text += f"\nLast call: {_fmt_ts(s['last_seen'])}"
+            text += f"\n<b>Last call:</b>       {_esc(_fmt_ts(s['last_seen']))}"
+        text += "</blockquote>"
         await reply(update, text)
 
     @admin
@@ -205,7 +231,7 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
         if not key:
             return
         ok = await db.set_status(key, "revoked")
-        await reply(update, "✅ Revoked." if ok else "Not found.")
+        await reply(update, "✅ <b>Revoked</b>" if ok else "<i>Not found.</i>")
 
     @admin
     async def cmd_unrevoke(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -213,37 +239,40 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
         if not key:
             return
         ok = await db.set_status(key, "active")
-        await reply(update, "✅ Re-enabled." if ok else "Not found.")
+        await reply(update, "✅ <b>Re-enabled</b>" if ok else "<i>Not found.</i>")
 
     @admin
     async def cmd_extend(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if len(ctx.args or []) < 2:
-            await reply(update, "Usage: `/extend <KEY> <days>` (0 = lifetime)")
+            await reply(update, "<b>Usage:</b> <code>/extend &lt;KEY&gt; &lt;days&gt;</code> <i>(0 = lifetime)</i>")
             return
         key = ctx.args[0]
         try:
             days = int(ctx.args[1])
         except ValueError:
-            await reply(update, "`days` must be a number.")
+            await reply(update, "<i>days</i> must be a number.")
             return
         if days <= 0:
             ok = await db.set_expiry(key, None)
-            msg = "✅ Set to lifetime." if ok else "Not found."
+            msg = "✅ <b>Set to lifetime</b>" if ok else "<i>Not found.</i>"
         else:
             lic = await db.get_license(key)
             if not lic:
-                await reply(update, "Not found.")
+                await reply(update, "<i>Not found.</i>")
                 return
             base = max(int(time.time()), lic["expires_at"] or 0)
             new_exp = base + days * 86400
             ok = await db.set_expiry(key, new_exp)
-            msg = f"✅ New expiry: {_fmt_ts(new_exp)}" if ok else "Failed."
+            msg = (
+                f"✅ <b>New expiry:</b> {_esc(_fmt_ts(new_exp))}"
+                if ok else "<i>Failed.</i>"
+            )
         await reply(update, msg)
 
     @admin
     async def cmd_seats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if len(ctx.args or []) < 2:
-            await reply(update, "Usage: `/seats <KEY> <n>`")
+            await reply(update, "<b>Usage:</b> <code>/seats &lt;KEY&gt; &lt;n&gt;</code>")
             return
         key = ctx.args[0]
         try:
@@ -251,25 +280,31 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
             if n < 1:
                 raise ValueError
         except ValueError:
-            await reply(update, "`n` must be >= 1.")
+            await reply(update, "<i>n</i> must be ≥ 1.")
             return
         ok = await db.set_max_machines(key, n)
-        await reply(update, f"✅ max_machines = {n}" if ok else "Not found.")
+        await reply(
+            update,
+            f"✅ <b>max_machines</b> = {n}" if ok else "<i>Not found.</i>",
+        )
 
     @admin
     async def cmd_reset(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not ctx.args:
-            await reply(update, "Usage: `/reset <KEY> [machine_id]`")
+            await reply(update, "<b>Usage:</b> <code>/reset &lt;KEY&gt; [machine_id]</code>")
             return
         key = ctx.args[0]
         if len(ctx.args) >= 2:
             ok = await db.remove_activation(key, ctx.args[1])
-            await reply(update, "✅ Activation removed." if ok else "Not found.")
+            await reply(
+                update,
+                "✅ <b>Activation removed</b>" if ok else "<i>Not found.</i>",
+            )
             return
         acts = await db.list_activations(key)
         for a in acts:
             await db.remove_activation(key, a["machine_id"])
-        await reply(update, f"✅ Reset {len(acts)} activation(s).")
+        await reply(update, f"✅ <b>Reset</b> {len(acts)} activation(s)")
 
     @admin
     async def cmd_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -277,7 +312,7 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
         if not key:
             return
         ok = await db.delete_license(key)
-        await reply(update, "✅ Deleted." if ok else "Not found.")
+        await reply(update, "✅ <b>Deleted</b>" if ok else "<i>Not found.</i>")
 
     # --- log & stats ---
     @admin
@@ -298,12 +333,12 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
         n = max(1, min(n, 50))
         rows = await db.recent_events(limit=n, license_key=key)
         if not rows:
-            await reply(update, "No events yet.")
+            await reply(update, "<i>No events yet.</i>")
             return
-        scope = f" for `{key}`" if key else ""
-        title = f"*Last {len(rows)} events*{scope}"
-        lines = [title] + [_fmt_event(r) for r in rows]
-        await reply(update, "\n".join(lines))
+        scope = f" for <code>{_esc(key)}</code>" if key else ""
+        title = f"<b>📋 Last {len(rows)} events</b>{scope}"
+        body = "\n".join(_fmt_event(r) for r in rows)
+        await reply(update, f"{title}\n<blockquote expandable>{body}</blockquote>")
 
     @admin
     async def cmd_errors(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -316,15 +351,16 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
         rows = await db.recent_events(limit=200)
         bad = [r for r in rows if r["status"] not in OK_STATUSES][:n]
         if not bad:
-            await reply(update, "No recent errors. 👌")
+            await reply(update, "✅ <i>No recent errors.</i>")
             return
-        lines = [f"*Last {len(bad)} failed events*"] + [_fmt_event(r) for r in bad]
-        await reply(update, "\n".join(lines))
+        title = f"<b>⚠️ Last {len(bad)} failed events</b>"
+        body = "\n".join(_fmt_event(r) for r in bad)
+        await reply(update, f"{title}\n<blockquote expandable>{body}</blockquote>")
 
     @admin
     async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not ctx.args:
-            await reply(update, "Usage: `/stats <KEY> [days]` (0 = all-time)")
+            await reply(update, "<b>Usage:</b> <code>/stats &lt;KEY&gt; [days]</code> <i>(0 = all-time)</i>")
             return
         key = ctx.args[0]
         try:
@@ -334,32 +370,39 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
         since = int(time.time()) - days * 86400 if days > 0 else None
         lic = await db.get_license(key)
         if not lic:
-            await reply(update, "Not found.")
+            await reply(update, "<i>Not found.</i>")
             return
         s = await db.event_stats(key, since=since)
         period = f"last {days} days" if days > 0 else "all-time"
-        lines = [
-            f"*Stats* `{key}` · _{period}_",
-            f"Total events:    {s['total']}",
-            f"Unique machines: {s['distinct_machines']}",
-            f"Last call:       {_fmt_ts(s['last_seen']) if s['last_seen'] else '-'}",
-        ]
+        text = (
+            f"<b>📊 Stats</b> <code>{_esc(key)}</code> · <i>{_esc(period)}</i>\n"
+            "<blockquote>"
+            f"<b>Total events:</b>    {s['total']}\n"
+            f"<b>Unique machines:</b> {s['distinct_machines']}\n"
+            f"<b>Last call:</b>       "
+            f"{_esc(_fmt_ts(s['last_seen'])) if s['last_seen'] else '-'}"
+            "</blockquote>"
+        )
         if s["buckets"]:
-            lines.append("\n*Breakdown*")
+            text += "\n<b>Breakdown</b>\n<blockquote>"
+            parts = []
             for b in sorted(s["buckets"], key=lambda x: -x["n"]):
                 icon = "✅" if b["status"] in OK_STATUSES else "⚠️"
-                lines.append(f"{icon} {b['event']}/`{b['status']}` · {b['n']}")
-        await reply(update, "\n".join(lines))
+                parts.append(
+                    f"{icon} <code>{_esc(b['event'])}/{_esc(b['status'])}</code> · {b['n']}"
+                )
+            text += "\n".join(parts) + "</blockquote>"
+        await reply(update, text)
 
     @admin
     async def cmd_mute(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await notifier.set_muted(True)
-        await reply(update, "🔕 Event push notifications muted.")
+        await reply(update, "🔕 <b>Notifications muted</b>")
 
     @admin
     async def cmd_unmute(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await notifier.set_muted(False)
-        await reply(update, "🔔 Event push notifications enabled.")
+        await reply(update, "🔔 <b>Notifications enabled</b>")
 
     app.add_handler(CommandHandler(["start", "help"], cmd_start))
     app.add_handler(CommandHandler("new", cmd_new))
