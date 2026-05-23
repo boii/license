@@ -26,7 +26,7 @@ import html
 import time
 from datetime import datetime, timezone
 from functools import wraps
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Sequence
 
 from telegram import Update
 from telegram.constants import ParseMode
@@ -41,22 +41,22 @@ HELP_TEXT = (
     "<b>License Gabot</b>\n"
     "<i>License server management over Telegram.</i>\n"
     "\n"
-    "<b>📜 License management</b>\n"
+    "<b>License management</b>\n"
     "<blockquote>"
-    "<code>/new [product] [days] [machines]</code> — create (days 0 = lifetime)\n"
-    "<code>/list [n]</code> — recent licenses\n"
-    "<code>/info &lt;KEY&gt;</code> — details + activations\n"
-    "<code>/revoke &lt;KEY&gt;</code> · <code>/unrevoke &lt;KEY&gt;</code>\n"
-    "<code>/extend &lt;KEY&gt; &lt;days&gt;</code> — extend (0 = lifetime)\n"
-    "<code>/seats &lt;KEY&gt; &lt;n&gt;</code> — set machine limit\n"
-    "<code>/reset &lt;KEY&gt; [machine_id]</code> — clear activation(s)\n"
-    "<code>/delete &lt;KEY&gt;</code> — delete permanently"
+    "<code>/new</code> [product] [days] [machines] — create (days 0 = lifetime)\n"
+    "<code>/list</code> [n] — recent licenses\n"
+    "<code>/info</code> &lt;KEY&gt; — details + activations\n"
+    "<code>/revoke</code> &lt;KEY&gt; · <code>/unrevoke</code> &lt;KEY&gt;\n"
+    "<code>/extend</code> &lt;KEY&gt; &lt;days&gt; — extend (0 = lifetime)\n"
+    "<code>/seats</code> &lt;KEY&gt; &lt;n&gt; — set machine limit\n"
+    "<code>/reset</code> &lt;KEY&gt; [machine_id] — clear activation(s)\n"
+    "<code>/delete</code> &lt;KEY&gt; — delete permanently"
     "</blockquote>\n"
-    "<b>📊 Usage logs</b>\n"
+    "<b>Usage logs</b>\n"
     "<blockquote>"
-    "<code>/log [n]</code> or <code>/log &lt;KEY&gt; [n]</code>\n"
-    "<code>/errors [n]</code> — failed events only\n"
-    "<code>/stats &lt;KEY&gt; [days]</code> — summary (0 = all-time)\n"
+    "<code>/log</code> [n] or <code>/log</code> &lt;KEY&gt; [n]\n"
+    "<code>/errors</code> [n] — failed events only\n"
+    "<code>/stats</code> &lt;KEY&gt; [days] — summary (0 = all-time)\n"
     "<code>/mute</code> · <code>/unmute</code> — push notifications"
     "</blockquote>"
 )
@@ -64,50 +64,76 @@ HELP_TEXT = (
 OK_STATUSES = {"ok", "activated", "deactivated"}
 
 
+# ---- formatting helpers -------------------------------------------------
+
 def _esc(value: Any) -> str:
-    """HTML-escape a dynamic value for safe rendering in Telegram HTML mode."""
+    """HTML-escape a value for Telegram HTML mode (treat empty as '-')."""
     if value is None or value == "":
         return "-"
     return html.escape(str(value), quote=False)
 
 
-def _fmt_ts(ts: int | None) -> str:
+def _fmt_dt(ts: int | None) -> str:
     if not ts:
         return "lifetime"
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _fmt_date(ts: int | None) -> str:
+    if not ts:
+        return "lifetime"
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
 def _fmt_short_ts(ts: int) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%m-%d %H:%M")
 
 
+def _cell(value: Any) -> str:
+    if value is None or value == "":
+        return "-"
+    return str(value)
+
+
+def _pre_kv(rows: Sequence[tuple[str, Any]]) -> str:
+    """Aligned key-value block. Both columns rendered in monospace."""
+    if not rows:
+        return ""
+    width = max(len(k) for k, _ in rows) + 2
+    lines = [f"{k.ljust(width)}{_cell(v)}" for k, v in rows]
+    return "<pre>" + html.escape("\n".join(lines)) + "</pre>"
+
+
+def _pre_table(headers: Sequence[str], rows: Sequence[Sequence[Any]]) -> str:
+    """Aligned table in a <pre> block. Empty header label is allowed."""
+    str_rows = [[_cell(c) for c in r] for r in rows]
+    widths = [len(h) for h in headers]
+    for r in str_rows:
+        for i, c in enumerate(r):
+            if len(c) > widths[i]:
+                widths[i] = len(c)
+
+    def fmt(cells: Sequence[str]) -> str:
+        return "  ".join(c.ljust(w) for c, w in zip(cells, widths)).rstrip()
+
+    body = "\n".join(fmt(line) for line in [headers, *str_rows])
+    return "<pre>" + html.escape(body) + "</pre>"
+
+
 def _fmt_license(lic: dict) -> str:
-    return (
-        f"<b>License</b> <code>{_esc(lic['key'])}</code>\n"
-        "<blockquote>"
-        f"<b>Product:</b>  <code>{_esc(lic['product'])}</code>\n"
-        f"<b>Status:</b>   <b>{_esc(lic['status'])}</b>\n"
-        f"<b>Seats:</b>    {lic.get('activations', '?')} / {lic['max_machines']}\n"
-        f"<b>Expires:</b>  {_esc(_fmt_ts(lic['expires_at']))}\n"
-        f"<b>Owner:</b>    {_esc(lic.get('owner'))}\n"
-        f"<b>Created:</b>  {_esc(_fmt_ts(lic['created_at']))}"
-        "</blockquote>"
-    )
+    """Hero key + monospace property table. Header is added by callers."""
+    items = [
+        ("product", lic["product"]),
+        ("status", lic["status"]),
+        ("seats", f"{lic.get('activations', '?')} / {lic['max_machines']}"),
+        ("expires", _fmt_dt(lic["expires_at"])),
+        ("owner", lic.get("owner")),
+        ("created", _fmt_dt(lic["created_at"])),
+    ]
+    return f"<code>{_esc(lic['key'])}</code>\n{_pre_kv(items)}"
 
 
-def _fmt_event(e: dict) -> str:
-    icon = "✅" if e["status"] in OK_STATUSES else "⚠️"
-    key = e["license_key"] or "-"
-    short_key = key.split("-")[0] if key != "-" else "-"
-    machine = (e["machine_id"] or "-")[:12]
-    return (
-        f"{icon} <code>{_esc(_fmt_short_ts(e['created_at']))}</code> "
-        f"<code>{_esc(e['event'])}/{_esc(e['status'])}</code>\n"
-        f"     <i>key</i> <code>{_esc(short_key)}</code> · "
-        f"<i>m</i> <code>{_esc(machine)}</code> · "
-        f"<i>ip</i> <code>{_esc(e['ip'])}</code>"
-    )
-
+# ---- guard --------------------------------------------------------------
 
 Handler = Callable[[Update, ContextTypes.DEFAULT_TYPE], Awaitable[None]]
 
@@ -129,6 +155,8 @@ def _admin_only(admin_ids: set[int]) -> Callable[[Handler], Handler]:
         return wrapper
     return deco
 
+
+# ---- application --------------------------------------------------------
 
 def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier]:
     """Build the Telegram Application + Notifier sharing one Bot instance.
@@ -176,15 +204,15 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
         if not rows:
             await reply(update, "<i>No licenses yet.</i>")
             return
-        lines = [f"<b>📜 Recent licenses</b> <i>({len(rows)})</i>", "<blockquote>"]
-        for r in rows:
-            lines.append(
-                f"<code>{_esc(r['key'])}</code>\n"
-                f"  {_esc(r['product'])} · <b>{_esc(r['status'])}</b> · "
-                f"{r['max_machines']} seat · {_esc(_fmt_ts(r['expires_at']))}"
-            )
-        lines.append("</blockquote>")
-        await reply(update, "\n".join(lines))
+        table = _pre_table(
+            ["KEY", "PRODUCT", "STATUS", "SEATS", "EXPIRES"],
+            [
+                [r["key"], r["product"], r["status"], r["max_machines"],
+                 _fmt_date(r["expires_at"])]
+                for r in rows
+            ],
+        )
+        await reply(update, f"<b>Recent licenses</b> <i>({len(rows)})</i>\n{table}")
 
     async def _need_key(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> str | None:
         if not ctx.args:
@@ -204,25 +232,18 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
         text = _fmt_license(lic)
         acts = await db.list_activations(key)
         if acts:
-            text += "\n<b>💻 Machines</b>\n<blockquote>"
-            parts = []
-            for a in acts:
-                parts.append(
-                    f"<code>{_esc(a['machine_id'])}</code>\n"
-                    f"  <i>last seen</i> {_esc(_fmt_ts(a['last_seen']))}"
-                )
-            text += "\n".join(parts) + "</blockquote>"
+            text += "\n<b>Machines</b>\n" + _pre_table(
+                ["MACHINE-ID", "LAST SEEN"],
+                [[a["machine_id"], _fmt_dt(a["last_seen"])] for a in acts],
+            )
         # last 7 days
         since = int(time.time()) - 7 * 86400
         s = await db.event_stats(key, since=since)
-        text += (
-            "\n<b>📈 Last 7 days</b>\n<blockquote>"
-            f"<b>Events:</b>          {s['total']}\n"
-            f"<b>Unique machines:</b> {s['distinct_machines']}"
-        )
-        if s["last_seen"]:
-            text += f"\n<b>Last call:</b>       {_esc(_fmt_ts(s['last_seen']))}"
-        text += "</blockquote>"
+        text += "\n<b>Last 7 days</b>\n" + _pre_kv([
+            ("events", s["total"]),
+            ("unique machines", s["distinct_machines"]),
+            ("last call", _fmt_dt(s["last_seen"]) if s["last_seen"] else "-"),
+        ])
         await reply(update, text)
 
     @admin
@@ -264,7 +285,7 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
             new_exp = base + days * 86400
             ok = await db.set_expiry(key, new_exp)
             msg = (
-                f"✅ <b>New expiry:</b> {_esc(_fmt_ts(new_exp))}"
+                f"✅ <b>Extended</b> → <code>{_esc(_fmt_dt(new_exp))}</code>"
                 if ok else "<i>Failed.</i>"
             )
         await reply(update, msg)
@@ -283,10 +304,7 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
             await reply(update, "<i>n</i> must be ≥ 1.")
             return
         ok = await db.set_max_machines(key, n)
-        await reply(
-            update,
-            f"✅ <b>max_machines</b> = {n}" if ok else "<i>Not found.</i>",
-        )
+        await reply(update, f"✅ <b>Seats</b> → <code>{n}</code>" if ok else "<i>Not found.</i>")
 
     @admin
     async def cmd_reset(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -315,6 +333,21 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
         await reply(update, "✅ <b>Deleted</b>" if ok else "<i>Not found.</i>")
 
     # --- log & stats ---
+    def _events_table(events: list[dict]) -> str:
+        rows = []
+        for e in events:
+            mark = "✓" if e["status"] in OK_STATUSES else "✗"
+            short_key = (e["license_key"] or "-").split("-")[0]
+            rows.append([
+                mark,
+                _fmt_short_ts(e["created_at"]),
+                e["event"],
+                e["status"],
+                short_key,
+                e["ip"] or "-",
+            ])
+        return _pre_table(["", "TIME", "EVENT", "STATUS", "KEY", "IP"], rows)
+
     @admin
     async def cmd_log(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         args = ctx.args or []
@@ -335,10 +368,11 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
         if not rows:
             await reply(update, "<i>No events yet.</i>")
             return
-        scope = f" for <code>{_esc(key)}</code>" if key else ""
-        title = f"<b>📋 Last {len(rows)} events</b>{scope}"
-        body = "\n".join(_fmt_event(r) for r in rows)
-        await reply(update, f"{title}\n<blockquote expandable>{body}</blockquote>")
+        scope = f" — <code>{_esc(key)}</code>" if key else ""
+        await reply(
+            update,
+            f"<b>Last {len(rows)} events</b>{scope}\n{_events_table(rows)}",
+        )
 
     @admin
     async def cmd_errors(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -353,9 +387,10 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
         if not bad:
             await reply(update, "✅ <i>No recent errors.</i>")
             return
-        title = f"<b>⚠️ Last {len(bad)} failed events</b>"
-        body = "\n".join(_fmt_event(r) for r in bad)
-        await reply(update, f"{title}\n<blockquote expandable>{body}</blockquote>")
+        await reply(
+            update,
+            f"<b>Last {len(bad)} failed events</b>\n{_events_table(bad)}",
+        )
 
     @admin
     async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -375,23 +410,19 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
         s = await db.event_stats(key, since=since)
         period = f"last {days} days" if days > 0 else "all-time"
         text = (
-            f"<b>📊 Stats</b> <code>{_esc(key)}</code> · <i>{_esc(period)}</i>\n"
-            "<blockquote>"
-            f"<b>Total events:</b>    {s['total']}\n"
-            f"<b>Unique machines:</b> {s['distinct_machines']}\n"
-            f"<b>Last call:</b>       "
-            f"{_esc(_fmt_ts(s['last_seen'])) if s['last_seen'] else '-'}"
-            "</blockquote>"
+            f"<b>Stats</b> <code>{_esc(key)}</code> — <i>{_esc(period)}</i>\n"
+            + _pre_kv([
+                ("total events", s["total"]),
+                ("unique machines", s["distinct_machines"]),
+                ("last call", _fmt_dt(s["last_seen"]) if s["last_seen"] else "-"),
+            ])
         )
         if s["buckets"]:
-            text += "\n<b>Breakdown</b>\n<blockquote>"
-            parts = []
-            for b in sorted(s["buckets"], key=lambda x: -x["n"]):
-                icon = "✅" if b["status"] in OK_STATUSES else "⚠️"
-                parts.append(
-                    f"{icon} <code>{_esc(b['event'])}/{_esc(b['status'])}</code> · {b['n']}"
-                )
-            text += "\n".join(parts) + "</blockquote>"
+            sorted_buckets = sorted(s["buckets"], key=lambda x: -x["n"])
+            text += "\n<b>Breakdown</b>\n" + _pre_table(
+                ["EVENT", "STATUS", "COUNT"],
+                [[b["event"], b["status"], b["n"]] for b in sorted_buckets],
+            )
         await reply(update, text)
 
     @admin
@@ -402,7 +433,7 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
     @admin
     async def cmd_unmute(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await notifier.set_muted(False)
-        await reply(update, "🔔 <b>Notifications enabled</b>")
+        await reply(update, "🔔 <b>Notifications on</b>")
 
     app.add_handler(CommandHandler(["start", "help"], cmd_start))
     app.add_handler(CommandHandler("new", cmd_new))

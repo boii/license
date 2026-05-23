@@ -65,13 +65,14 @@ class Notifier:
             return
 
         emoji = "🚨" if is_alert else "✅"
+        body = "\n".join([
+            f"key      {license_key or '-'}",
+            f"machine  {machine_id or '-'}",
+            f"ip       {ip or '-'}",
+        ])
         text = (
-            f"{emoji} <b>{_esc(event)}</b> · <code>{_esc(status)}</code>\n"
-            "<blockquote>"
-            f"<b>Key:</b>     <code>{_esc(license_key)}</code>\n"
-            f"<b>Machine:</b> <code>{_esc(machine_id)}</code>\n"
-            f"<b>IP:</b>      <code>{_esc(ip)}</code>"
-            "</blockquote>"
+            f"{emoji} <b>{_esc(event)}</b> — <code>{_esc(status)}</code>\n"
+            f"<pre>{html.escape(body)}</pre>"
         )
         for chat_id in self.admin_ids:
             try:
