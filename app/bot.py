@@ -181,17 +181,16 @@ Handler = Callable[[Update, ContextTypes.DEFAULT_TYPE], Awaitable[None]]
 
 
 def _admin_only(admin_ids: set[int]) -> Callable[[Handler], Handler]:
+    """Silent admin guard: non-admins get no reply at all.
+
+    Use this for every command except /start. /start handles non-admins
+    explicitly with a throttled greeting (see cmd_start).
+    """
     def deco(fn: Handler) -> Handler:
         @wraps(fn)
         async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             user = update.effective_user
             if not user or user.id not in admin_ids:
-                if update.effective_message:
-                    uid = user.id if user else "?"
-                    await update.effective_message.reply_text(
-                        f"🚫 <b>Access denied</b>\nYour Telegram ID: <code>{uid}</code>",
-                        parse_mode=ParseMode.HTML,
-                    )
                 return
             await fn(update, context)
         return wrapper
@@ -218,9 +217,31 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
                 reply_markup=keyboard,
             )
 
-    @admin
+    GREETING_THROTTLE_SECONDS = 24 * 3600
+    GREETING_TEXT = (
+        "👋 <b>License Gabot</b>\n"
+        "<i>This is a private bot. Access is restricted to authorized admins.</i>"
+    )
+
     async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        await reply(update, HELP_TEXT)
+        user = update.effective_user
+        if user and user.id in settings.admin_ids:
+            await reply(update, HELP_TEXT)
+            return
+        # Non-admin: greet at most once per 24h per user, silent otherwise.
+        if not user:
+            return
+        kv_key = f"greet:{user.id}"
+        last_raw = await db.kv_get(kv_key)
+        now = int(time.time())
+        try:
+            last = int(last_raw) if last_raw else 0
+        except ValueError:
+            last = 0
+        if now - last < GREETING_THROTTLE_SECONDS:
+            return
+        await db.kv_set(kv_key, str(now))
+        await reply(update, GREETING_TEXT)
 
     @admin
     async def cmd_new(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
