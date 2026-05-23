@@ -1,4 +1,4 @@
-"""Konfigurasi sederhana, dibaca dari environment."""
+"""Simple config, loaded from environment."""
 from __future__ import annotations
 
 import os
@@ -29,15 +29,15 @@ class Settings:
 def load_settings() -> Settings:
     bot_token = os.getenv("BOT_TOKEN", "").strip()
     if not bot_token:
-        raise RuntimeError("BOT_TOKEN belum di-set di environment")
+        raise RuntimeError("BOT_TOKEN is not set in environment")
 
     signing_key = os.getenv("SIGNING_KEY", "").strip()
     if not signing_key or signing_key.startswith("changeme"):
-        raise RuntimeError("SIGNING_KEY belum di-set ke nilai aman")
+        raise RuntimeError("SIGNING_KEY is not set to a safe value")
 
     admin_ids = _split_ids(os.getenv("ADMIN_IDS", ""))
     if not admin_ids:
-        raise RuntimeError("ADMIN_IDS belum di-set (minimal 1 chat ID)")
+        raise RuntimeError("ADMIN_IDS is not set (need at least 1 chat ID)")
 
     return Settings(
         bot_token=bot_token,

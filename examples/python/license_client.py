@@ -1,24 +1,24 @@
-"""KISS license client untuk Python 3.9+.
+"""KISS license client for Python 3.9+.
 
-Cara pakai:
+Usage:
     from license_client import LicenseClient, LicenseError
 
     client = LicenseClient(
         api_url="https://license.kin.my.id",
-        signing_key="<sama dengan SIGNING_KEY di .env VPS>",
+        signing_key="<same as SIGNING_KEY in .env on the VPS>",
         product="myapp",
     )
 
-    # Pertama kali user input key:
+    # First time the user enters a key:
     res = client.activate("VPXNC-YP98C-T4BH9-APW5Q")
     if not res["valid"]:
         raise LicenseError(res["status"])
 
-    # Setiap app start:
+    # On every app start:
     if not client.check(saved_key):
-        sys.exit("Lisensi tidak valid")
+        sys.exit("Invalid license")
 
-Hanya butuh dependency 'requests'. Install: pip install requests
+Only depends on `requests`. Install: pip install requests
 """
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ import requests
 
 
 class LicenseError(RuntimeError):
-    """Dilempar saat lisensi tidak valid atau respons tidak terpercaya."""
+    """Raised when the license is invalid or the response cannot be trusted."""
 
 
 class LicenseClient:
@@ -81,11 +81,11 @@ class LicenseClient:
         })
 
     def check(self, key: str) -> bool:
-        """Convenience: validate + grace period offline.
+        """Convenience: validate + offline grace period.
 
-        - Online & valid → True, simpan last_ok.
-        - Online & tidak valid → False.
-        - Offline / network error → True kalau last_ok < N hari, else False.
+        - Online & valid → True, store last_ok.
+        - Online & invalid → False.
+        - Offline / network error → True if last_ok < N days, else False.
         """
         try:
             res = self.validate(key)
@@ -98,7 +98,7 @@ class LicenseClient:
         return False
 
     def machine_id(self) -> str:
-        """Stable per-machine ID, disimpan di config dir."""
+        """Stable per-machine ID, stored in the config dir."""
         p = self.config_dir / "machine.id"
         if not p.exists():
             p.write_text(uuid.uuid4().hex)
@@ -111,7 +111,7 @@ class LicenseClient:
         r.raise_for_status()
         data = r.json()
         if not self._verify(dict(data)):
-            raise LicenseError("signature mismatch — koneksi tidak terpercaya")
+            raise LicenseError("signature mismatch — untrusted response")
         return data
 
     def _verify(self, resp: dict[str, Any]) -> bool:
@@ -134,7 +134,7 @@ class LicenseClient:
         return (int(time.time()) - last) < self.offline_grace_seconds
 
 
-# --- Quick CLI untuk testing ---
+# --- Quick CLI for testing ---
 if __name__ == "__main__":
     import argparse
 
@@ -149,8 +149,8 @@ if __name__ == "__main__":
 
     if not args.signing_key:
         raise SystemExit(
-            "Set LICENSE_SIGNING_KEY env var atau --key-secret. "
-            "Nilainya harus sama dengan SIGNING_KEY di .env server."
+            "Set the LICENSE_SIGNING_KEY env var or use --key-secret. "
+            "It must match the SIGNING_KEY in the server's .env file."
         )
 
     client = LicenseClient(args.api, args.signing_key, args.product)

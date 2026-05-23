@@ -1,7 +1,7 @@
-"""Push notifikasi event penting ke admin Telegram.
+"""Push important event notifications to Telegram admins.
 
-Dipakai oleh API setelah berhasil mencatat event ke DB. Aman dipanggil
-'fire-and-forget'; gagal kirim tidak boleh menggagalkan request.
+Used by the API after it has logged an event to the DB. Safe to call
+fire-and-forget; a failed send must never break the request.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from .db import DB
 
 log = logging.getLogger("notifier")
 
-# Status yang dianggap menarik perhatian admin.
+# Statuses that warrant admin attention.
 ALERT_STATUSES = {
     "machine_limit_reached",
     "revoked",
@@ -48,8 +48,8 @@ class Notifier:
         machine_id: str | None,
         ip: str | None,
     ) -> None:
-        # Selalu kirim event activate sukses (penting untuk billing/insight),
-        # selain itu hanya alert.
+        # Always send successful activations (useful for billing/insight),
+        # otherwise only alerts.
         is_alert = status in ALERT_STATUSES
         is_activate_ok = event == "activate" and status in ("ok", "activated")
         if not (is_alert or is_activate_ok):
@@ -60,9 +60,9 @@ class Notifier:
         emoji = "🚨" if is_alert else "✅"
         text = (
             f"{emoji} *{event}* · `{status}`\n"
-            f"key: `{license_key or '-'}`\n"
-            f"machine: `{machine_id or '-'}`\n"
-            f"ip: `{ip or '-'}`"
+            f"Key:     `{license_key or '-'}`\n"
+            f"Machine: `{machine_id or '-'}`\n"
+            f"IP:      `{ip or '-'}`"
         )
         for chat_id in self.admin_ids:
             try:
@@ -72,8 +72,8 @@ class Notifier:
                     disable_notification=not is_alert,
                 )
             except Exception as exc:  # noqa: BLE001
-                log.warning("Telegram notify gagal ke %s: %s", chat_id, exc)
+                log.warning("Telegram notify failed for %s: %s", chat_id, exc)
 
     def fire(self, **kwargs) -> None:
-        """Versi fire-and-forget. Aman dipanggil dari handler API."""
+        """Fire-and-forget version. Safe to call from API handlers."""
         asyncio.create_task(self.notify(**kwargs))

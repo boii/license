@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Smoke test license server pakai curl. Pakai untuk verifikasi cepat
-# atau pemakaian server-to-server. Butuh: bash, curl, jq.
+# Smoke test the license server with curl. Useful for quick verification
+# or server-to-server use. Requires: bash, curl, jq.
 #
-# Pemakaian:
+# Usage:
 #   ./curl.sh activate KEY
 #   ./curl.sh validate KEY
 #   ./curl.sh deactivate KEY
@@ -19,7 +19,7 @@ cmd="${1:-}"
 key="${2:-}"
 
 if [[ -z "$cmd" || -z "$key" ]]; then
-    echo "Pemakaian: $0 {activate|validate|deactivate} <KEY>"
+    echo "Usage: $0 {activate|validate|deactivate} <KEY>"
     exit 1
 fi
 

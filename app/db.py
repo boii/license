@@ -1,4 +1,4 @@
-"""SQLite kecil. Sengaja dijaga simple, tidak pakai ORM."""
+"""Tiny SQLite layer. Kept simple on purpose, no ORM."""
 from __future__ import annotations
 
 import os
@@ -12,7 +12,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS licenses (
     key            TEXT PRIMARY KEY,
     product        TEXT NOT NULL DEFAULT 'default',
-    owner          TEXT,                    -- catatan bebas: email/nama/notes
+    owner          TEXT,                    -- free-form: email/name/notes
     status         TEXT NOT NULL DEFAULT 'active',  -- active | revoked
     max_machines   INTEGER NOT NULL DEFAULT 1,
     expires_at     INTEGER,                 -- unix seconds, NULL = lifetime
@@ -31,8 +31,8 @@ CREATE TABLE IF NOT EXISTS activations (
 );
 CREATE INDEX IF NOT EXISTS idx_act_key ON activations(license_key);
 
--- Log penggunaan. Sengaja TANPA foreign key agar audit trail tetap ada
--- meski lisensinya dihapus.
+-- Usage log. Intentionally WITHOUT foreign key so the audit trail
+-- survives even if the license is deleted.
 CREATE TABLE IF NOT EXISTS usage_events (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     license_key  TEXT,
@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS kv (
 """
 
 
-_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # tanpa karakter ambigu
+_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no ambiguous characters
 
 
 def generate_key(groups: int = 4, group_len: int = 5) -> str:
@@ -297,7 +297,7 @@ class DB:
             await conn.commit()
             return cur.rowcount
 
-    # --- key/value (mute toggle, dst.) ---
+    # --- key/value (mute toggle, etc.) ---
     async def kv_get(self, key: str) -> str | None:
         async with self._connect() as conn:
             cur = await conn.execute("SELECT value FROM kv WHERE key=?", (key,))

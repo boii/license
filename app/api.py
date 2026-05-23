@@ -1,11 +1,11 @@
-"""HTTP API untuk client app yang ingin validate / activate lisensi.
+"""HTTP API for client apps to validate / activate licenses.
 
-Endpoint:
+Endpoints:
     POST /v1/validate
     POST /v1/activate
     POST /v1/deactivate
-    GET  /v1/admin/licenses              (butuh ADMIN_API_TOKEN bila di-set)
-    GET  /v1/admin/events                (idem)
+    GET  /v1/admin/licenses              (requires ADMIN_API_TOKEN if set)
+    GET  /v1/admin/events                (same)
     GET  /healthz
 """
 from __future__ import annotations
@@ -30,7 +30,7 @@ def _sign(payload: dict[str, Any], key: str) -> str:
 
 
 def _client_ip(request: Request) -> str | None:
-    # Hormati reverse proxy umum (Nginx/Caddy) jika ada.
+    # Honor common reverse proxies (Nginx/Caddy) if present.
     for h in ("x-forwarded-for", "x-real-ip"):
         v = request.headers.get(h)
         if v:

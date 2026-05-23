@@ -1,43 +1,43 @@
 # KISS License Server
 
-License server minimalis ala Keygen.sh / Cryptolens, dijaga sesimpel mungkin.
+A minimalist license server in the spirit of Keygen.sh / Cryptolens, kept as simple as possible.
 
-- 1 container Python (FastAPI + Telegram bot dalam satu proses)
-- SQLite (file di volume `./data`), tanpa DB server terpisah
-- Pengelolaan lisensi sepenuhnya lewat **Telegram bot**
-- Validasi lisensi via HTTP JSON, response ditandatangani **HMAC-SHA256**
-- Log pemakaian tersimpan di SQLite + push notifikasi event penting ke Telegram
+- One Python container (FastAPI + Telegram bot in a single process)
+- SQLite (file in the `./data` volume), no separate DB server
+- License management entirely via a **Telegram bot**
+- License validation over HTTP JSON, responses signed with **HMAC-SHA256**
+- Usage logs stored in SQLite + push notifications for important events to Telegram
 
-## Daftar isi
+## Table of contents
 
-- [Fitur](#fitur)
-- [Setup di VPS Ubuntu](#setup-di-vps-ubuntu)
-- [Konfigurasi `.env`](#konfigurasi-env)
-- [Perintah Telegram](#perintah-telegram)
-- [HTTPS dengan Cloudflare proxy + Caddy](#https-dengan-cloudflare-proxy--caddy)
-- [API untuk client app](#api-untuk-client-app)
-- [Contoh client (Python & Node.js)](#contoh-client-python--nodejs)
+- [Features](#features)
+- [Setup on an Ubuntu VPS](#setup-on-an-ubuntu-vps)
+- [`.env` configuration](#env-configuration)
+- [Telegram commands](#telegram-commands)
+- [HTTPS with Cloudflare proxy + Caddy](#https-with-cloudflare-proxy--caddy)
+- [Client API](#client-api)
+- [Client examples (Python & Node.js)](#client-examples-python--nodejs)
 - [Backup & maintenance](#backup--maintenance)
 - [Troubleshooting](#troubleshooting)
 
-## Fitur
+## Features
 
-- Lisensi multi-produk (`product` field), kuota mesin (`max_machines`), masa berlaku, revoke/unrevoke, extend.
-- Activate/validate/deactivate per `machine_id` stabil (bukan MAC address).
-- Audit log: setiap call API tercatat lengkap dengan IP, user-agent, status. Push notif Telegram untuk event penting (activation baru, limit_reached, expired, revoked, dll.).
-- Retensi log otomatis (default 90 hari, bisa selamanya).
-- Tanpa panel web. Manajemen sepenuhnya dari Telegram supaya tidak ada permukaan serang tambahan.
+- Multi-product licenses (`product` field), per-license machine quota (`max_machines`), expiry, revoke/unrevoke, extend.
+- Activate/validate/deactivate per stable `machine_id` (not MAC address).
+- Audit log: every API call is recorded with IP, user-agent, and status. Push notifications to Telegram for important events (new activations, limit reached, expired, revoked, etc.).
+- Automatic log retention (default 90 days, configurable to forever).
+- No web panel. Management is fully done via Telegram, reducing the attack surface.
 
-## Setup di VPS Ubuntu
+## Setup on an Ubuntu VPS
 
-Asumsi VPS sudah punya Docker + Docker Compose.
+Assumes the VPS already has Docker and Docker Compose installed.
 
-### 1. Siapkan token Telegram
+### 1. Prepare your Telegram token
 
-- Chat **@BotFather** → `/newbot` → catat token (`123456:ABC...`).
-- Chat **@userinfobot** → catat ID Telegram kamu (angka).
+- Chat **@BotFather** → `/newbot` → save the token (`123456:ABC...`).
+- Chat **@userinfobot** → save your Telegram ID (a number).
 
-### 2. Clone & konfigurasi
+### 2. Clone & configure
 
 ```bash
 git clone https://github.com/boii/license.git
@@ -46,7 +46,7 @@ cp .env.example .env
 nano .env
 ```
 
-Generate `SIGNING_KEY` (jangan diganti setelah ada client di lapangan):
+Generate a `SIGNING_KEY` (do not change it after clients are deployed):
 
 ```bash
 openssl rand -hex 32
@@ -59,103 +59,103 @@ docker compose up -d --build
 docker compose logs -f license-server
 ```
 
-Cek health (di VPS):
+Health check (on the VPS):
 
 ```bash
 curl http://127.0.0.1:8080/healthz
 # {"status":"ok"}
 ```
 
-Chat `/start` ke bot kamu di Telegram. Kalau dibalas teks "Akses ditolak", `ADMIN_IDS` di `.env` salah — perbaiki, lalu `docker compose restart`.
+Send `/start` to your bot in Telegram. If you get "Access denied", `ADMIN_IDS` in `.env` is wrong. Fix it, then `docker compose restart`.
 
-### 4. Buat lisensi pertama
+### 4. Create your first license
 
-Dari Telegram:
+From Telegram:
 
 ```
 /new myapp 30 1
 ```
 
-Bot membalas key seperti `VPXNC-YP98C-T4BH9-APW5Q`.
+The bot replies with a key like `VPXNC-YP98C-T4BH9-APW5Q`.
 
-## Konfigurasi `.env`
+## `.env` configuration
 
-| Var | Wajib | Default | Keterangan |
+| Variable | Required | Default | Description |
 |---|---|---|---|
-| `BOT_TOKEN` | ya | – | Token dari @BotFather |
-| `ADMIN_IDS` | ya | – | Telegram user ID admin, koma sebagai pemisah |
-| `SIGNING_KEY` | ya | – | Random panjang. `openssl rand -hex 32`. Sama persis dengan yang di-embed ke client |
-| `ADMIN_API_TOKEN` | tidak | – | Jika di-set, endpoint `/v1/admin/*` butuh header `X-Admin-Token` bernilai sama |
-| `EVENT_RETENTION_DAYS` | tidak | `90` | Hari retensi log pemakaian. `0` = selamanya |
-| `DB_PATH` | tidak | `/srv/data/licenses.db` | Path SQLite di dalam container |
-| `API_HOST` | tidak | `0.0.0.0` | Bind interface |
-| `API_PORT` | tidak | `8080` | Bind port |
+| `BOT_TOKEN` | yes | – | Token from @BotFather |
+| `ADMIN_IDS` | yes | – | Telegram user IDs of admins, comma-separated |
+| `SIGNING_KEY` | yes | – | Long random string. `openssl rand -hex 32`. Must match the value embedded in clients |
+| `ADMIN_API_TOKEN` | no | – | If set, `/v1/admin/*` requires the `X-Admin-Token` header |
+| `EVENT_RETENTION_DAYS` | no | `90` | Usage log retention in days. `0` = keep forever |
+| `DB_PATH` | no | `/srv/data/licenses.db` | SQLite path inside the container |
+| `API_HOST` | no | `0.0.0.0` | Bind interface |
+| `API_PORT` | no | `8080` | Bind port |
 
-Volume `./data` di host dipetakan ke `/srv/data` di container. Backup cukup folder itu.
+The host's `./data` folder is mapped to `/srv/data` in the container. Backing up that folder is enough.
 
-## Perintah Telegram
+## Telegram commands
 
-Kelola lisensi:
-
-```
-/new [product] [days] [machines]   buat lisensi (days 0 = lifetime)
-/list [n]                          daftar lisensi terbaru
-/info <KEY>                        detail + activations + ringkasan log
-/revoke <KEY>                      matikan
-/unrevoke <KEY>                    aktifkan lagi
-/extend <KEY> <days>               perpanjang (0 = lifetime)
-/seats <KEY> <n>                   ubah max_machines
-/reset <KEY> [machine_id]          hapus activation
-/delete <KEY>                      hapus permanen
-```
-
-Log pemakaian:
+License management:
 
 ```
-/log [n]                  n event terakhir global (default 20)
-/log <KEY> [n]            n event terakhir untuk 1 lisensi
-/errors [n]               hanya event gagal
-/stats <KEY> [days]       statistik (0 = all-time, default 7 hari)
-/mute  /unmute            push notifikasi event
+/new [product] [days] [machines]   create license (days 0 = lifetime)
+/list [n]                          recent licenses
+/info <KEY>                        details + activations + log summary
+/revoke <KEY>                      disable
+/unrevoke <KEY>                    re-enable
+/extend <KEY> <days>               extend (0 = lifetime)
+/seats <KEY> <n>                   change max_machines
+/reset <KEY> [machine_id]          clear activation(s)
+/delete <KEY>                      delete permanently
 ```
 
-Setiap call ke `/v1/validate`, `/v1/activate`, `/v1/deactivate` direkam ke
-SQLite. Event penting (activation baru, limit_reached, expired, revoked, dst.)
-otomatis di-push ke semua admin di `ADMIN_IDS`. Pakai `/mute` kalau traffic ramai.
+Usage logs:
 
-## HTTPS dengan Cloudflare proxy + Caddy
+```
+/log [n]                  last n global events (default 20)
+/log <KEY> [n]            last n events for one license
+/errors [n]               only failed events
+/stats <KEY> [days]       stats (0 = all-time, default 7 days)
+/mute  /unmute            event push notifications
+```
 
-Untuk produksi, **wajib pakai HTTPS**. License key terkirim plaintext kalau tanpa
-TLS dan bisa dicuri di jaringan publik. Setup ini sudah teruji:
+Every call to `/v1/validate`, `/v1/activate`, `/v1/deactivate` is recorded to
+SQLite. Important events (new activations, limit_reached, expired, revoked, etc.)
+are automatically pushed to all admins in `ADMIN_IDS`. Use `/mute` if traffic gets noisy.
 
-- Cloudflare di depan (proxy oranye) → hide IP VPS, DDoS protection.
-- Caddy di VPS sebagai reverse proxy ke container.
-- Sertifikat lewat Let's Encrypt **DNS-01** (Cloudflare API). Wajib DNS-01 karena Cloudflare yang terminate TLS, jadi TLS-ALPN-01 dan HTTP-01 tidak bisa lewat.
+## HTTPS with Cloudflare proxy + Caddy
 
-### 1. DNS record di Cloudflare
+For production, **HTTPS is required**. License keys travel in plaintext without
+TLS and can be intercepted on public networks. The setup below is field-tested:
 
-- Add record `A` → name `license`, value = IP publik VPS.
-- Proxy status: **Proxied** (oranye).
-- SSL/TLS → Overview → mode **Full (strict)**. Jangan Flexible.
+- Cloudflare in front (orange proxy) → hides the VPS IP, DDoS protection.
+- Caddy on the VPS as a reverse proxy to the container.
+- Certificate via Let's Encrypt **DNS-01** (Cloudflare API). DNS-01 is required because Cloudflare terminates TLS, so TLS-ALPN-01 and HTTP-01 cannot pass through.
 
-### 2. Buka port di firewall provider
+### 1. Cloudflare DNS record
 
-Banyak VPS punya firewall di luar UFW (Tencent Lighthouse, AWS Security Group,
-Alibaba ECS, dll.) yang **default tutup** port 80 & 443. Buka dulu:
+- Add an `A` record → name `license`, value = your VPS public IP.
+- Proxy status: **Proxied** (orange).
+- SSL/TLS → Overview → mode **Full (strict)**. Not Flexible.
+
+### 2. Open ports on the cloud firewall
+
+Many VPS providers have a firewall outside UFW (Tencent Lighthouse, AWS Security Groups,
+Alibaba ECS, etc.) that **closes** ports 80 and 443 by default. Open them first:
 
 | Port | Protocol | Source |
 |---|---|---|
 | 80 | TCP | `0.0.0.0/0` |
 | 443 | TCP | `0.0.0.0/0` |
 
-Lalu di VPS:
+Then on the VPS:
 
 ```bash
 sudo ufw allow 22 && sudo ufw allow 80 && sudo ufw allow 443
 sudo ufw enable
 ```
 
-### 3. Bind container hanya ke localhost
+### 3. Bind the container to localhost only
 
 Edit `docker-compose.yml`:
 
@@ -164,32 +164,32 @@ ports:
   - "127.0.0.1:8080:8080"
 ```
 
-Lalu `docker compose up -d`. Sekarang port 8080 hanya bisa diakses dari localhost; Caddy yang akan publish ke 443.
+Then `docker compose up -d`. Port 8080 is now reachable from localhost only; Caddy publishes it on 443.
 
-### 4. Pasang Caddy + plugin Cloudflare
+### 4. Install Caddy + the Cloudflare plugin
 
 ```bash
 sudo apt install -y caddy
 sudo caddy add-package github.com/caddy-dns/cloudflare
-caddy list-modules | grep cloudflare    # harus muncul: dns.providers.cloudflare
+caddy list-modules | grep cloudflare    # should list: dns.providers.cloudflare
 ```
 
 ### 5. Cloudflare API token
 
-Di https://dash.cloudflare.com/profile/api-tokens → **Create Token** → template
-**Edit zone DNS** → Zone Resources = domain kamu → Create. Copy token (cuma muncul sekali).
+Go to https://dash.cloudflare.com/profile/api-tokens → **Create Token** → template
+**Edit zone DNS** → Zone Resources = your domain → Create. Copy the token (shown only once).
 
-Daftarkan ke systemd:
+Register it with systemd:
 
 ```bash
 sudo systemctl edit caddy
 ```
 
-Tambahkan:
+Add:
 
 ```
 [Service]
-Environment=CF_API_TOKEN=token-asli-tanpa-kutip
+Environment=CF_API_TOKEN=your-real-token-no-quotes
 ```
 
 ```bash
@@ -201,7 +201,7 @@ sudo systemctl daemon-reload
 `/etc/caddy/Caddyfile`:
 
 ```
-license.contoh.com {
+license.example.com {
     tls {
         dns cloudflare {env.CF_API_TOKEN}
     }
@@ -216,7 +216,7 @@ sudo systemctl restart caddy
 sudo journalctl -u caddy -f
 ```
 
-Tunggu sampai muncul:
+Wait until you see:
 
 ```
 trying to solve challenge ... "challenge_type":"dns-01"
@@ -224,39 +224,39 @@ authorization finalized
 certificate obtained successfully
 ```
 
-Tes:
+Test:
 
 ```bash
-curl -I https://license.contoh.com/healthz
+curl -I https://license.example.com/healthz
 # HTTP/2 200
 ```
 
-## API untuk client app
+## Client API
 
-Semua endpoint membalas JSON dengan field `signature` (HMAC-SHA256 atas payload
-selain field signature, JSON canonical: `sort_keys=True`, `separators=(",", ":")`).
-Verifikasi di sisi client agar respons tidak bisa dipalsukan.
+Every endpoint returns JSON with a `signature` field (HMAC-SHA256 over the payload
+without the signature field, JSON canonical: `sort_keys=True`, `separators=(",", ":")`).
+Verify it on the client side so responses cannot be forged.
 
 ### `POST /v1/activate`
 
-Pertama kali user input key. Bind mesin baru ke lisensi.
+First time the user enters a key. Binds a new machine to the license.
 
 ```json
 {
   "key": "VPXNC-YP98C-T4BH9-APW5Q",
-  "machine_id": "stable-id-per-mesin",
-  "fingerprint": "optional info app/os",
+  "machine_id": "stable-id-per-machine",
+  "fingerprint": "optional app/os info",
   "product": "myapp"
 }
 ```
 
 ### `POST /v1/validate`
 
-Setiap app start. Tidak menambah mesin. Kalau `machine_id` dikirim, server cek mesin itu sudah teraktivasi.
+On every app start. Does not add a machine. If `machine_id` is provided, the server checks that this machine has been activated.
 
 ### `POST /v1/deactivate`
 
-Lepas mesin dari lisensi (mis. user pindah laptop).
+Detach a machine from the license (e.g. user moves to a new laptop).
 
 ### Response
 
@@ -275,28 +275,28 @@ Lepas mesin dari lisensi (mis. user pindah laptop).
 }
 ```
 
-Status yang mungkin muncul:
+Possible status values:
 
-| Status | Arti |
+| Status | Meaning |
 |---|---|
-| `ok` / `activated` / `deactivated` | Sukses |
-| `not_found` | Key salah ketik |
-| `revoked` | Dimatikan admin |
-| `expired` | Masa berlaku habis |
-| `product_mismatch` | Key untuk produk lain |
-| `machine_limit_reached` | Seat penuh |
-| `machine_not_activated` | Mesin belum diaktivasi |
+| `ok` / `activated` / `deactivated` | Success |
+| `not_found` | Wrong key |
+| `revoked` | Disabled by admin |
+| `expired` | Expired |
+| `product_mismatch` | Key belongs to a different product |
+| `machine_limit_reached` | All seats taken |
+| `machine_not_activated` | Machine has not been activated yet |
 
-## Contoh client (Python & Node.js)
+## Client examples (Python & Node.js)
 
-Folder [`examples/`](examples/) berisi client siap pakai — single file, tanpa
-dependency. Tinggal copy ke aplikasi kamu:
+The [`examples/`](examples/) folder ships ready-to-use clients — single file, no
+dependencies. Just copy them into your app:
 
-| File | Bahasa | Pemakaian |
+| File | Language | Usage |
 |---|---|---|
-| [`examples/python/license_client.py`](examples/python/license_client.py) | Python 3.9+ | `pip install requests`, copy file, import |
-| [`examples/nodejs/license-client.mjs`](examples/nodejs/license-client.mjs) | Node.js 18+ / Bun / Deno | copy file, import. Tanpa npm install |
-| [`examples/curl.sh`](examples/curl.sh) | bash + curl + jq | smoke test atau pemakaian server-to-server |
+| [`examples/python/license_client.py`](examples/python/license_client.py) | Python 3.9+ | `pip install requests`, copy the file, import |
+| [`examples/nodejs/license-client.mjs`](examples/nodejs/license-client.mjs) | Node.js 18+ / Bun / Deno | copy and import. No npm install needed |
+| [`examples/curl.sh`](examples/curl.sh) | bash + curl + jq | smoke test or server-to-server use |
 
 Quick start (Python):
 
@@ -305,18 +305,18 @@ from license_client import LicenseClient, LicenseError
 
 client = LicenseClient(
     api_url="https://license.kin.my.id",
-    signing_key="<sama dengan SIGNING_KEY di .env VPS>",
+    signing_key="<same as SIGNING_KEY in .env on the VPS>",
     product="myapp",
 )
 
-# Pertama kali user input key:
+# First time the user enters a key:
 res = client.activate(user_input_key)
 if not res["valid"]:
     raise LicenseError(res["status"])
 
-# Setiap app start (sudah include grace period offline):
+# On every app start (already includes offline grace period):
 if not client.check(saved_key):
-    sys.exit("Lisensi tidak valid")
+    sys.exit("Invalid license")
 ```
 
 Quick start (Node.js):
@@ -326,7 +326,7 @@ import { LicenseClient } from "./license-client.mjs";
 
 const client = new LicenseClient({
   apiUrl: "https://license.kin.my.id",
-  signingKey: "<sama dengan SIGNING_KEY di .env VPS>",
+  signingKey: "<same as SIGNING_KEY in .env on the VPS>",
   product: "myapp",
 });
 
@@ -336,29 +336,28 @@ if (!res.valid) throw new Error(res.status);
 if (!await client.check(savedKey)) process.exit(1);
 ```
 
-Test cepat dari terminal:
+Quick test from the terminal:
 
 ```bash
 LICENSE_SIGNING_KEY=xxx python examples/python/license_client.py validate VPXNC-...
 LICENSE_SIGNING_KEY=xxx node examples/nodejs/license-client.mjs validate VPXNC-...
 ```
 
-### Pola `machine_id` yang stabil
+### Stable `machine_id` patterns
 
-Cross-platform paling aman: generate UUID sekali, simpan ke config dir aplikasi.
-Jangan pakai MAC address (berubah saat ganti Wi-Fi/Ethernet). Kalau mau lebih
-"engaged" ke OS, pakai:
+The safest cross-platform option: generate a UUID once and store it in the app's config dir.
+Don't use the MAC address (it changes when switching Wi-Fi/Ethernet). For a more
+OS-bound value, use:
 
 - Linux: `/etc/machine-id`
 - Windows: `HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid`
-- macOS: `IOPlatformUUID` dari `ioreg`
+- macOS: `IOPlatformUUID` from `ioreg`
 
-### Grace period offline
+### Offline grace period
 
-Kalau aplikasi kadang offline, simpan timestamp `last_ok_at` saat `validate`
-sukses. Kalau panggilan berikutnya gagal **karena network error** (bukan
-`valid:false`), izinkan jalan kalau `now - last_ok_at < N hari`. Setelah itu
-paksa online.
+If the app is sometimes offline, store a `last_ok_at` timestamp on a successful
+`validate`. If the next call fails **due to a network error** (not `valid:false`),
+allow the app to run while `now - last_ok_at < N days`. After that, force the app online.
 
 ## Backup & maintenance
 
@@ -366,7 +365,7 @@ paksa online.
 # Backup
 tar czf license-backup-$(date +%F).tgz data/
 
-# Lihat log
+# View logs
 docker compose logs -f license-server
 
 # Restart
@@ -376,36 +375,37 @@ docker compose restart license-server
 git pull && docker compose up -d --build
 ```
 
-Skema DB di-handle `CREATE TABLE IF NOT EXISTS` saat boot. Tidak perlu migrasi manual.
+The DB schema is handled by `CREATE TABLE IF NOT EXISTS` at boot. No manual migration needed.
 
 ## Troubleshooting
 
-**Caddy gagal cert dengan `Cannot negotiate ALPN protocol "acme-tls/1"`**
-Berarti Cloudflare proxy oranye aktif tapi Caddy masih pakai TLS-ALPN-01. Pakai
-DNS-01 (lihat bagian HTTPS). Setelah ganti, kalau kena rate-limit Let's Encrypt
-("too many failed authorizations"), tunggu 1 jam atau pakai staging endpoint dulu.
+**Caddy fails certificate with `Cannot negotiate ALPN protocol "acme-tls/1"`**
+Cloudflare's orange proxy is on but Caddy is still using TLS-ALPN-01. Switch to
+DNS-01 (see the HTTPS section). After switching, if you hit a Let's Encrypt
+rate limit ("too many failed authorizations"), wait an hour or use the staging
+endpoint first.
 
-**Cloudflare balas 522**
-Origin tidak bisa dijangkau. Cek berurutan:
+**Cloudflare returns 522**
+The origin can't be reached. Check in order:
 
-1. `sudo ss -tlnp | grep -E ':80|:443'` → Caddy harus listen.
-2. `sudo ufw status` → 80 dan 443 harus ALLOW.
-3. **Firewall di panel cloud provider** (Tencent Lighthouse / AWS SG / dll.) → buka 80 dan 443. Ini penyebab 522 paling sering.
+1. `sudo ss -tlnp | grep -E ':80|:443'` → Caddy must be listening.
+2. `sudo ufw status` → 80 and 443 must be ALLOW.
+3. **Cloud provider firewall panel** (Tencent Lighthouse / AWS SG / etc.) → open 80 and 443. This is the most common cause of 522.
 
-**Bot bilang "Akses ditolak"**
-`ADMIN_IDS` di `.env` salah. ID Telegram kamu ditampilkan di pesan tolakan. Edit `.env`, lalu `docker compose restart`.
+**Bot says "Access denied"**
+`ADMIN_IDS` in `.env` is wrong. Your Telegram ID is shown in the rejection message. Edit `.env`, then `docker compose restart`.
 
-**Signature mismatch di client**
-- `SIGNING_KEY` di client tidak sama persis dengan di server.
-- JSON tidak di-canonicalize (harus `sort_keys` + tanpa spasi). Lihat contoh di atas.
+**Signature mismatch on the client**
+- The client's `SIGNING_KEY` doesn't exactly match the server's.
+- The JSON isn't canonicalized (must use `sort_keys` and no spaces). See the example above.
 
-**Lisensi tidak bisa di-revoke / status tetap active**
-Pastikan key persis (case-sensitive). Coba `/info <KEY>` dulu untuk konfirmasi key ada.
+**License can't be revoked / status stays active**
+Make sure the key is exact (case-sensitive). Try `/info <KEY>` first to confirm the key exists.
 
-## Catatan keamanan
+## Security notes
 
-- Pakai HTTPS untuk semua deployment publik. License key plaintext mudah disadap.
-- `SIGNING_KEY` jangan diganti setelah ada client di lapangan — semua client lama akan tolak respons.
-- Rotate `BOT_TOKEN` dan `CF_API_TOKEN` kalau pernah ter-leak (chat, screenshot, log).
-- `ADMIN_API_TOKEN` opsional; cukup untuk batasi siapa yang bisa hit `/v1/admin/*` via HTTP. Manajemen utama selalu via Telegram.
-- Verifikasi `signature` di client wajib. TLS lindungi confidentiality, signature lindungi integrity. Pakai keduanya.
+- Use HTTPS for every public deployment. Plaintext license keys are easy to capture.
+- Don't change `SIGNING_KEY` after clients are in the field — every old client will reject responses.
+- Rotate `BOT_TOKEN` and `CF_API_TOKEN` if they ever leak (chat, screenshots, logs).
+- `ADMIN_API_TOKEN` is optional; it gates HTTP access to `/v1/admin/*`. Primary management is always via Telegram.
+- Verify `signature` on the client. TLS protects confidentiality, the signature protects integrity. Use both.

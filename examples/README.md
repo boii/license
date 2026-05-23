@@ -1,38 +1,38 @@
-# Cara KISS integrasi ke aplikasi kamu
+# KISS integration guide
 
-Ada 3 hal yang kamu butuhkan:
+You only need three values:
 
 ```
-LICENSE_API  = "https://license.kin.my.id"          # endpoint server
-SIGNING_KEY  = "<isi sama dengan .env di VPS>"      # untuk verifikasi signature
-PRODUCT      = "myapp"                               # cocok dengan nama produk lisensi
+LICENSE_API  = "https://license.kin.my.id"          # server endpoint
+SIGNING_KEY  = "<same as .env on the VPS>"          # used to verify signatures
+PRODUCT      = "myapp"                               # must match the license product
 ```
 
-`SIGNING_KEY` di-embed saat build aplikasi (bukan di-input user). Itu yang
-bikin respons server tidak bisa dipalsukan.
+Embed `SIGNING_KEY` at build time (don't ask the user for it). That's what
+makes server responses tamper-proof.
 
-## Pilih bahasa
+## Pick a language
 
-| File | Bahasa | Cocok untuk |
+| File | Language | Best for |
 |---|---|---|
-| [`python/license_client.py`](python/license_client.py) | Python 3.9+ | desktop app, CLI, script internal |
-| [`nodejs/license-client.mjs`](nodejs/license-client.mjs) | Node.js 18+ / Bun / Deno | Electron, CLI, web service |
-| [`curl.sh`](curl.sh) | shell | smoke test atau pemakaian server-to-server |
+| [`python/license_client.py`](python/license_client.py) | Python 3.9+ | desktop apps, CLIs, internal scripts |
+| [`nodejs/license-client.mjs`](nodejs/license-client.mjs) | Node.js 18+ / Bun / Deno | Electron, CLIs, web services |
+| [`curl.sh`](curl.sh) | shell | smoke tests or server-to-server use |
 
-Setiap file sengaja **single-file, tanpa dependency tambahan** (kecuali `requests` di Python).
+Each file is intentionally **single-file with no extra dependencies** (except `requests` for the Python client).
 
-## Pola integrasi 3 langkah
+## 3-step integration
 
-1. **Saat user pertama kali install & input license key:**
+1. **First time the user enters a license key:**
    ```python
    res = activate(user_input_key)
    if not res["valid"]:
-       show_error(res["status"])  # tampilkan pesan sesuai status
+       show_error(res["status"])  # show a message based on status
        return
    save_key_to_local(user_input_key)
    ```
 
-2. **Setiap kali aplikasi start:**
+2. **On every app start:**
    ```python
    key = read_key_from_local()
    res = validate(key)
@@ -40,30 +40,30 @@ Setiap file sengaja **single-file, tanpa dependency tambahan** (kecuali `request
        block_app(res["status"])
    ```
 
-3. **Saat user mau pindah laptop / uninstall (opsional):**
+3. **When the user moves machines / uninstalls (optional):**
    ```python
    deactivate(key)
    ```
 
-## Status response yang harus kamu handle di UI
+## Response statuses to handle in your UI
 
-| `status`               | Pesan ke user                         |
-|------------------------|---------------------------------------|
-| `ok` / `activated`     | Lanjut, jangan tampilkan apa-apa      |
-| `not_found`            | "License key salah, periksa kembali"  |
-| `revoked`              | "License dimatikan, hubungi support"  |
-| `expired`              | "License kedaluwarsa, perpanjang"     |
-| `product_mismatch`     | "Key untuk produk lain"               |
-| `machine_limit_reached`| "Batas mesin tercapai, deactivate dulu di mesin lain" |
-| `machine_not_activated`| "Mesin belum diaktivasi"              |
+| `status`               | Message to user                                      |
+|------------------------|------------------------------------------------------|
+| `ok` / `activated`     | Continue, no message needed                          |
+| `not_found`            | "Invalid license key, please check"                  |
+| `revoked`              | "License has been revoked, contact support"          |
+| `expired`              | "License expired, please renew"                      |
+| `product_mismatch`     | "Key belongs to a different product"                 |
+| `machine_limit_reached`| "Machine limit reached, deactivate another device"   |
+| `machine_not_activated`| "This machine is not activated"                      |
 
-## Grace period offline (opsional, recommended)
+## Offline grace period (optional, recommended)
 
-Aplikasi desktop kadang nggak online. Pola sederhana:
+Desktop apps go offline sometimes. A simple pattern:
 
-1. Saat `validate` sukses, simpan timestamp `last_ok_at` ke file lokal.
-2. Saat `validate` gagal **karena network error** (bukan `valid:false`),
-   izinkan jalan kalau `now - last_ok_at < 7 hari`.
-3. Setelah 7 hari offline, paksa user online.
+1. On a successful `validate`, store a `last_ok_at` timestamp locally.
+2. If `validate` fails **due to a network error** (not `valid:false`),
+   allow the app to run while `now - last_ok_at < 7 days`.
+3. After 7 days offline, force the user online.
 
-Implementasi sudah ada di kedua client di atas — tinggal pakai.
+Both clients above already implement this — just use them.

@@ -1,4 +1,4 @@
-"""Entry point: jalankan FastAPI + Telegram bot dalam 1 proses."""
+"""Entry point: run FastAPI + Telegram bot in a single process."""
 from __future__ import annotations
 
 import asyncio
@@ -17,7 +17,7 @@ log = logging.getLogger("license-server")
 
 
 async def _retention_loop(db: DB, retention_days: int) -> None:
-    """Hapus event lama berkala. Jalankan saat boot, lalu tiap 24 jam."""
+    """Periodically purge old events. Runs at boot, then every 24h."""
     if retention_days <= 0:
         return
     while True:
@@ -27,7 +27,7 @@ async def _retention_loop(db: DB, retention_days: int) -> None:
             if n:
                 log.info("Purged %d old events (> %d days)", n, retention_days)
         except Exception as exc:  # noqa: BLE001
-            log.warning("Purge gagal: %s", exc)
+            log.warning("Purge failed: %s", exc)
         await asyncio.sleep(24 * 3600)
 
 

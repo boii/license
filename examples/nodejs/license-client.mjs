@@ -1,21 +1,21 @@
 /**
- * KISS license client untuk Node.js 18+, Bun, Deno.
- * Satu file, tanpa dependency. Pakai built-in `fetch`, `crypto`, `fs`.
+ * KISS license client for Node.js 18+, Bun, Deno.
+ * Single file, no dependencies. Uses built-in `fetch`, `crypto`, `fs`.
  *
- * Cara pakai:
+ * Usage:
  *   import { LicenseClient } from "./license-client.mjs";
  *
  *   const client = new LicenseClient({
  *     apiUrl: "https://license.kin.my.id",
- *     signingKey: "<sama dengan SIGNING_KEY di .env VPS>",
+ *     signingKey: "<same as SIGNING_KEY in .env on the VPS>",
  *     product: "myapp",
  *   });
  *
- *   // Pertama kali user input key:
+ *   // First time the user enters a key:
  *   const res = await client.activate("VPXNC-YP98C-T4BH9-APW5Q");
  *   if (!res.valid) throw new Error(res.status);
  *
- *   // Setiap app start:
+ *   // On every app start:
  *   if (!await client.check(savedKey)) process.exit(1);
  */
 import crypto from "node:crypto";
@@ -63,10 +63,10 @@ export class LicenseClient {
   }
 
   /**
-   * Convenience: validate + grace period offline.
-   * - Online & valid → true, simpan last_ok.
-   * - Online & tidak valid → false.
-   * - Offline / error jaringan → true kalau last_ok < N hari, else false.
+   * Convenience: validate + offline grace period.
+   * - Online & valid → true, store last_ok.
+   * - Online & invalid → false.
+   * - Offline / network error → true if last_ok < N days, else false.
    */
   async check(key) {
     try {
@@ -77,7 +77,7 @@ export class LicenseClient {
       }
       return false;
     } catch (err) {
-      if (err instanceof LicenseError) throw err;     // signature mismatch tetap fatal
+      if (err instanceof LicenseError) throw err;     // signature mismatch is always fatal
       return this._withinGrace();
     }
   }
@@ -109,7 +109,7 @@ export class LicenseClient {
       clearTimeout(timer);
     }
     if (!this._verify({ ...data })) {
-      throw new LicenseError("signature mismatch — koneksi tidak terpercaya");
+      throw new LicenseError("signature mismatch — untrusted response");
     }
     return data;
   }
@@ -161,7 +161,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     product: process.env.LICENSE_PRODUCT ?? "myapp",
   });
   if (!client.signingKey) {
-    console.error("Set LICENSE_SIGNING_KEY env var (sama dengan SIGNING_KEY server).");
+    console.error("Set the LICENSE_SIGNING_KEY env var (must match SIGNING_KEY on the server).");
     process.exit(1);
   }
   const res = await client[action](key);
