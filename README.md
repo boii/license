@@ -289,101 +289,58 @@ Status yang mungkin muncul:
 
 ## Contoh client (Python & Node.js)
 
-### Python
+Folder [`examples/`](examples/) berisi client siap pakai — single file, tanpa
+dependency. Tinggal copy ke aplikasi kamu:
+
+| File | Bahasa | Pemakaian |
+|---|---|---|
+| [`examples/python/license_client.py`](examples/python/license_client.py) | Python 3.9+ | `pip install requests`, copy file, import |
+| [`examples/nodejs/license-client.mjs`](examples/nodejs/license-client.mjs) | Node.js 18+ / Bun / Deno | copy file, import. Tanpa npm install |
+| [`examples/curl.sh`](examples/curl.sh) | bash + curl + jq | smoke test atau pemakaian server-to-server |
+
+Quick start (Python):
 
 ```python
-import hashlib, hmac, json, pathlib, uuid, requests
+from license_client import LicenseClient, LicenseError
 
-LICENSE_API = "https://license.contoh.com"
-PRODUCT     = "myapp"
-SIGNING_KEY = "<sama dengan SIGNING_KEY di server>"
+client = LicenseClient(
+    api_url="https://license.kin.my.id",
+    signing_key="<sama dengan SIGNING_KEY di .env VPS>",
+    product="myapp",
+)
 
-def machine_id() -> str:
-    p = pathlib.Path.home() / ".config" / "myapp" / "machine.id"
-    p.parent.mkdir(parents=True, exist_ok=True)
-    if not p.exists():
-        p.write_text(uuid.uuid4().hex)
-    return p.read_text().strip()
-
-def _verify(resp: dict) -> bool:
-    sig = resp.pop("signature", "")
-    raw = json.dumps(resp, sort_keys=True, separators=(",", ":")).encode()
-    expected = hmac.new(SIGNING_KEY.encode(), raw, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(sig, expected)
-
-def _call(path: str, body: dict) -> dict:
-    r = requests.post(f"{LICENSE_API}{path}", json=body, timeout=10)
-    r.raise_for_status()
-    data = r.json()
-    if not _verify(dict(data)):  # verify pakai copy karena pop signature
-        raise RuntimeError("signature mismatch — koneksi tidak terpercaya")
-    return data
-
-def activate(key: str) -> dict:
-    return _call("/v1/activate", {
-        "key": key, "machine_id": machine_id(), "product": PRODUCT,
-    })
-
-def validate(key: str) -> dict:
-    return _call("/v1/validate", {
-        "key": key, "machine_id": machine_id(), "product": PRODUCT,
-    })
-
-# Pakai
-res = activate("VPXNC-YP98C-T4BH9-APW5Q")
+# Pertama kali user input key:
+res = client.activate(user_input_key)
 if not res["valid"]:
-    raise SystemExit(f"Aktivasi gagal: {res['status']}")
+    raise LicenseError(res["status"])
+
+# Setiap app start (sudah include grace period offline):
+if not client.check(saved_key):
+    sys.exit("Lisensi tidak valid")
 ```
 
-### Node.js
+Quick start (Node.js):
 
 ```js
-import crypto from "node:crypto";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { LicenseClient } from "./license-client.mjs";
 
-const LICENSE_API = "https://license.contoh.com";
-const PRODUCT     = "myapp";
-const SIGNING_KEY = "<sama dengan SIGNING_KEY di server>";
+const client = new LicenseClient({
+  apiUrl: "https://license.kin.my.id",
+  signingKey: "<sama dengan SIGNING_KEY di .env VPS>",
+  product: "myapp",
+});
 
-function machineId() {
-  const p = path.join(os.homedir(), ".config", "myapp", "machine.id");
-  fs.mkdirSync(path.dirname(p), { recursive: true });
-  if (!fs.existsSync(p)) fs.writeFileSync(p, crypto.randomUUID());
-  return fs.readFileSync(p, "utf8").trim();
-}
+const res = await client.activate(userInputKey);
+if (!res.valid) throw new Error(res.status);
 
-function sortKeys(o) {
-  if (Array.isArray(o)) return o.map(sortKeys);
-  if (o && typeof o === "object")
-    return Object.keys(o).sort().reduce((a, k) => (a[k] = sortKeys(o[k]), a), {});
-  return o;
-}
+if (!await client.check(savedKey)) process.exit(1);
+```
 
-function verify(resp) {
-  const { signature, ...rest } = resp;
-  const raw = JSON.stringify(sortKeys(rest));
-  const expected = crypto.createHmac("sha256", SIGNING_KEY).update(raw).digest("hex");
-  return signature.length === expected.length &&
-         crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
-}
+Test cepat dari terminal:
 
-async function call(p, body) {
-  const r = await fetch(`${LICENSE_API}${p}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = await r.json();
-  if (!verify({ ...data })) throw new Error("signature mismatch");
-  return data;
-}
-
-export const activate = (key) => call("/v1/activate",
-  { key, machine_id: machineId(), product: PRODUCT });
-export const validate = (key) => call("/v1/validate",
-  { key, machine_id: machineId(), product: PRODUCT });
+```bash
+LICENSE_SIGNING_KEY=xxx python examples/python/license_client.py validate VPXNC-...
+LICENSE_SIGNING_KEY=xxx node examples/nodejs/license-client.mjs validate VPXNC-...
 ```
 
 ### Pola `machine_id` yang stabil
