@@ -41,6 +41,14 @@ async def _run() -> None:
     db = DB(settings.db_path)
     await db.init()
 
+    # One-time cleanup: remove leftover greeting throttle rows from older versions.
+    try:
+        removed = await db.kv_delete_prefix("greet:")
+        if removed:
+            log.info("Removed %d stale greet:* rows from kv", removed)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("kv cleanup skipped: %s", exc)
+
     bot_app, notifier = build_application(settings, db)
     api = build_app(settings, db, notifier)
 

@@ -341,3 +341,9 @@ class DB:
                 (key, value),
             )
             await conn.commit()
+
+    async def kv_delete_prefix(self, prefix: str) -> int:
+        async with self._connect() as conn:
+            cur = await conn.execute("DELETE FROM kv WHERE key LIKE ?", (prefix + "%",))
+            await conn.commit()
+            return cur.rowcount
