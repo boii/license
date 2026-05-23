@@ -14,6 +14,7 @@ import hashlib
 import hmac
 import json
 import time
+from collections import deque
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -36,6 +37,34 @@ def _client_ip(request: Request) -> str | None:
         if v:
             return v.split(",")[0].strip()
     return request.client.host if request.client else None
+
+
+class _RateLimiter:
+    """In-memory sliding window per IP. KISS, fine for single-process deploys."""
+
+    def __init__(self, per_min: int):
+        self.per_min = per_min
+        self._hits: dict[str, deque[float]] = {}
+
+    def check(self, ip: str | None) -> bool:
+        if self.per_min <= 0 or not ip:
+            return True
+        now = time.time()
+        cutoff = now - 60.0
+        q = self._hits.get(ip)
+        if q is None:
+            q = deque()
+            self._hits[ip] = q
+        while q and q[0] < cutoff:
+            q.popleft()
+        if len(q) >= self.per_min:
+            return False
+        q.append(now)
+        # Opportunistic cleanup so the dict doesn't grow forever.
+        if len(self._hits) > 5000:
+            for k in [k for k, qq in self._hits.items() if not qq or qq[-1] < cutoff]:
+                self._hits.pop(k, None)
+        return True
 
 
 class ValidateBody(BaseModel):
@@ -62,11 +91,22 @@ def _check_license(lic: dict[str, Any], product: str | None) -> tuple[bool, str]
 
 
 def build_app(settings: Settings, db: DB, notifier: Notifier | None) -> FastAPI:
-    app = FastAPI(title="KISS License Server", version="1.1.0")
+    app = FastAPI(title="KISS License Server", version="1.2.0")
+    limiter = _RateLimiter(settings.rate_limit_per_min)
 
     def _require_admin(token: str | None) -> None:
         if settings.admin_api_token and token != settings.admin_api_token:
             raise HTTPException(status_code=401, detail="unauthorized")
+
+    def _enforce_rate(request: Request) -> str | None:
+        ip = _client_ip(request)
+        if not limiter.check(ip):
+            raise HTTPException(
+                status_code=429,
+                detail="rate_limit_exceeded",
+                headers={"Retry-After": "60"},
+            )
+        return ip
 
     def _response(ok: bool, status: str, lic: dict[str, Any] | None = None,
                   extra: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -89,9 +129,8 @@ def build_app(settings: Settings, db: DB, notifier: Notifier | None) -> FastAPI:
 
     async def _record(
         request: Request, *, event: str, status: str,
-        body: ValidateBody | ActivateBody,
+        body: ValidateBody | ActivateBody, ip: str | None,
     ) -> None:
-        ip = _client_ip(request)
         ua = request.headers.get("user-agent")
         machine_id = getattr(body, "machine_id", None)
         await db.log_event(
@@ -107,45 +146,50 @@ def build_app(settings: Settings, db: DB, notifier: Notifier | None) -> FastAPI:
             )
 
     @app.get("/healthz")
-    async def healthz() -> dict[str, str]:
-        return {"status": "ok"}
+    async def healthz() -> dict[str, Any]:
+        db_ok = await db.ping()
+        if not db_ok:
+            raise HTTPException(status_code=503, detail={"status": "db_down"})
+        return {"status": "ok", "db": "ok", "ts": int(time.time())}
 
     @app.post("/v1/validate")
     async def validate(body: ValidateBody, request: Request) -> dict[str, Any]:
+        ip = _enforce_rate(request)
         lic = await db.get_license(body.key)
         if not lic:
-            await _record(request, event="validate", status="not_found", body=body)
+            await _record(request, event="validate", status="not_found", body=body, ip=ip)
             return _response(False, "not_found")
         ok, status = _check_license(lic, body.product)
         if not ok:
-            await _record(request, event="validate", status=status, body=body)
+            await _record(request, event="validate", status=status, body=body, ip=ip)
             return _response(False, status, lic)
         if body.machine_id:
             acts = await db.list_activations(body.key)
             if not any(a["machine_id"] == body.machine_id for a in acts):
                 await _record(request, event="validate",
-                              status="machine_not_activated", body=body)
+                              status="machine_not_activated", body=body, ip=ip)
                 return _response(False, "machine_not_activated", lic)
             await db.upsert_activation(body.key, body.machine_id, None)
-        await _record(request, event="validate", status="ok", body=body)
+        await _record(request, event="validate", status="ok", body=body, ip=ip)
         return _response(True, "ok", lic)
 
     @app.post("/v1/activate")
     async def activate(body: ActivateBody, request: Request) -> dict[str, Any]:
+        ip = _enforce_rate(request)
         lic = await db.get_license(body.key)
         if not lic:
-            await _record(request, event="activate", status="not_found", body=body)
+            await _record(request, event="activate", status="not_found", body=body, ip=ip)
             return _response(False, "not_found")
         ok, status = _check_license(lic, body.product)
         if not ok:
-            await _record(request, event="activate", status=status, body=body)
+            await _record(request, event="activate", status=status, body=body, ip=ip)
             return _response(False, status, lic)
 
         acts = await db.list_activations(body.key)
         already = any(a["machine_id"] == body.machine_id for a in acts)
         if not already and len(acts) >= lic["max_machines"]:
             await _record(request, event="activate",
-                          status="machine_limit_reached", body=body)
+                          status="machine_limit_reached", body=body, ip=ip)
             return _response(False, "machine_limit_reached", lic,
                              {"activations": len(acts)})
 
@@ -153,18 +197,19 @@ def build_app(settings: Settings, db: DB, notifier: Notifier | None) -> FastAPI:
             body.key, body.machine_id, body.fingerprint
         )
         result = "activated" if is_new else "ok"
-        await _record(request, event="activate", status=result, body=body)
+        await _record(request, event="activate", status=result, body=body, ip=ip)
         return _response(True, result, lic, {"activations": total})
 
     @app.post("/v1/deactivate")
     async def deactivate(body: ActivateBody, request: Request) -> dict[str, Any]:
+        ip = _enforce_rate(request)
         lic = await db.get_license(body.key)
         if not lic:
-            await _record(request, event="deactivate", status="not_found", body=body)
+            await _record(request, event="deactivate", status="not_found", body=body, ip=ip)
             return _response(False, "not_found")
         removed = await db.remove_activation(body.key, body.machine_id)
         status = "deactivated" if removed else "machine_not_activated"
-        await _record(request, event="deactivate", status=status, body=body)
+        await _record(request, event="deactivate", status=status, body=body, ip=ip)
         return _response(removed, status, lic)
 
     @app.get("/v1/admin/licenses")

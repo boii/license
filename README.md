@@ -87,6 +87,7 @@ The bot replies with a key like `VPXNC-YP98C-T4BH9-APW5Q`.
 | `SIGNING_KEY` | yes | – | Long random string. `openssl rand -hex 32`. Must match the value embedded in clients |
 | `ADMIN_API_TOKEN` | no | – | If set, `/v1/admin/*` requires the `X-Admin-Token` header |
 | `EVENT_RETENTION_DAYS` | no | `90` | Usage log retention in days. `0` = keep forever |
+| `RATE_LIMIT_PER_MIN` | no | `60` | Per-IP rate limit on `/v1/*` endpoints. `0` disables |
 | `DB_PATH` | no | `/srv/data/licenses.db` | SQLite path inside the container |
 | `API_HOST` | no | `0.0.0.0` | Bind interface |
 | `API_PORT` | no | `8080` | Bind port |
@@ -100,13 +101,16 @@ License management:
 ```
 /new [product] [days] [machines]   create license (days 0 = lifetime)
 /list [n]                          recent licenses
+/find <query>                      search by key / product / owner
 /info <KEY>                        details + activations + log summary
-/revoke <KEY>                      disable
+/note <KEY> <text>                 set owner note ('-' to clear)
+/revoke <KEY>                      disable (asks for confirmation)
 /unrevoke <KEY>                    re-enable
 /extend <KEY> <days>               extend (0 = lifetime)
 /seats <KEY> <n>                   change max_machines
-/reset <KEY> [machine_id]          clear activation(s)
-/delete <KEY>                      delete permanently
+/reset <KEY> [machine_id]          clear activation(s) (asks if all)
+/delete <KEY>                      delete permanently (asks for confirmation)
+/backup                            download SQLite snapshot
 ```
 
 Usage logs:
@@ -236,6 +240,10 @@ curl -I https://license.example.com/healthz
 Every endpoint returns JSON with a `signature` field (HMAC-SHA256 over the payload
 without the signature field, JSON canonical: `sort_keys=True`, `separators=(",", ":")`).
 Verify it on the client side so responses cannot be forged.
+
+`/v1/*` endpoints are rate-limited per source IP (default 60 req/min). Exceeding
+the limit returns HTTP `429` with a `Retry-After: 60` header. Set
+`RATE_LIMIT_PER_MIN=0` to disable.
 
 ### `POST /v1/activate`
 

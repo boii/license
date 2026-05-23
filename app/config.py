@@ -24,6 +24,7 @@ class Settings:
     api_host: str
     api_port: int
     event_retention_days: int
+    rate_limit_per_min: int
 
 
 def load_settings() -> Settings:
@@ -48,4 +49,5 @@ def load_settings() -> Settings:
         api_host=os.getenv("API_HOST", "0.0.0.0"),
         api_port=int(os.getenv("API_PORT", "8080")),
         event_retention_days=int(os.getenv("EVENT_RETENTION_DAYS", "90")),
+        rate_limit_per_min=int(os.getenv("RATE_LIMIT_PER_MIN", "60")),
     )

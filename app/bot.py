@@ -5,14 +5,17 @@ Commands:
     /new [product] [days] [machines]    - create license
                                           (defaults: default 0 1, days 0 = lifetime)
     /list [n]                           - last n licenses (default 10)
+    /find <query>                       - search by key / product / owner
     /info <KEY>                         - license details + activations + log summary
-    /revoke <KEY>                       - disable license
+    /note <KEY> <text...>               - set / clear (use '-') the owner note
+    /revoke <KEY>                       - disable license (with confirm)
     /unrevoke <KEY>                     - re-enable license
     /extend <KEY> <days>                - extend validity (days, 0 = lifetime)
     /seats <KEY> <n>                    - change max_machines
-    /reset <KEY>                        - clear all activations
+    /reset <KEY>                        - clear all activations (with confirm)
     /reset <KEY> <machine_id>           - clear one activation
-    /delete <KEY>                       - delete license permanently
+    /delete <KEY>                       - delete license permanently (with confirm)
+    /backup                             - download SQLite snapshot
 
     /log [n]                            - last n global events (default 20)
     /log <KEY> [n]                      - last n events for one license
@@ -23,14 +26,26 @@ Commands:
 from __future__ import annotations
 
 import html
+import os
+import shutil
+import tempfile
 import time
 from datetime import datetime, timezone
 from functools import wraps
 from typing import Any, Awaitable, Callable, Sequence
 
-from telegram import Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Update,
+)
 from telegram.constants import ParseMode
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+)
 
 from .config import Settings
 from .db import DB
@@ -45,12 +60,15 @@ HELP_TEXT = (
     "<blockquote>"
     "<code>/new</code> [product] [days] [machines] — create (days 0 = lifetime)\n"
     "<code>/list</code> [n] — recent licenses\n"
+    "<code>/find</code> &lt;query&gt; — search by key / product / owner\n"
     "<code>/info</code> &lt;KEY&gt; — details + activations\n"
+    "<code>/note</code> &lt;KEY&gt; &lt;text&gt; — set owner note (<code>-</code> to clear)\n"
     "<code>/revoke</code> &lt;KEY&gt; · <code>/unrevoke</code> &lt;KEY&gt;\n"
     "<code>/extend</code> &lt;KEY&gt; &lt;days&gt; — extend (0 = lifetime)\n"
     "<code>/seats</code> &lt;KEY&gt; &lt;n&gt; — set machine limit\n"
     "<code>/reset</code> &lt;KEY&gt; [machine_id] — clear activation(s)\n"
-    "<code>/delete</code> &lt;KEY&gt; — delete permanently"
+    "<code>/delete</code> &lt;KEY&gt; — delete permanently\n"
+    "<code>/backup</code> — download SQLite snapshot"
     "</blockquote>\n"
     "<b>Usage logs</b>\n"
     "<blockquote>"
@@ -96,7 +114,7 @@ def _cell(value: Any) -> str:
 
 
 def _pre_kv(rows: Sequence[tuple[str, Any]]) -> str:
-    """Aligned key-value block. Both columns rendered in monospace."""
+    """Aligned key-value block. Rendered in monospace."""
     if not rows:
         return ""
     width = max(len(k) for k, _ in rows) + 2
@@ -133,6 +151,30 @@ def _fmt_license(lic: dict) -> str:
     return f"<code>{_esc(lic['key'])}</code>\n{_pre_kv(items)}"
 
 
+def _info_keyboard(key: str) -> InlineKeyboardMarkup:
+    """Action buttons under /info card."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔒 Revoke", callback_data=f"act:revoke:{key}"),
+            InlineKeyboardButton("🔓 Unrevoke", callback_data=f"act:unrevoke:{key}"),
+        ],
+        [
+            InlineKeyboardButton("⏳ +30 days", callback_data=f"act:extend30:{key}"),
+            InlineKeyboardButton("♻️ Reset", callback_data=f"act:reset:{key}"),
+        ],
+        [
+            InlineKeyboardButton("🗑️ Delete", callback_data=f"act:delete:{key}"),
+        ],
+    ])
+
+
+def _confirm_keyboard(action: str, key: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Yes", callback_data=f"do:{action}:{key}"),
+        InlineKeyboardButton("✖️ Cancel", callback_data="cancel"),
+    ]])
+
+
 # ---- guard --------------------------------------------------------------
 
 Handler = Callable[[Update, ContextTypes.DEFAULT_TYPE], Awaitable[None]]
@@ -167,10 +209,13 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
     notifier = Notifier(app.bot, db, settings.admin_ids)
     admin = _admin_only(settings.admin_ids)
 
-    async def reply(update: Update, text: str) -> None:
+    async def reply(update: Update, text: str,
+                    keyboard: InlineKeyboardMarkup | None = None) -> None:
         if update.effective_message:
             await update.effective_message.reply_text(
-                text, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+                text, parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+                reply_markup=keyboard,
             )
 
     @admin
@@ -194,6 +239,16 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
         )
         await reply(update, "✅ <b>License created</b>\n\n" + _fmt_license(lic))
 
+    def _list_table(rows: list[dict]) -> str:
+        return _pre_table(
+            ["KEY", "PRODUCT", "STATUS", "SEATS", "EXPIRES"],
+            [
+                [r["key"], r["product"], r["status"], r["max_machines"],
+                 _fmt_date(r["expires_at"])]
+                for r in rows
+            ],
+        )
+
     @admin
     async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         try:
@@ -204,15 +259,23 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
         if not rows:
             await reply(update, "<i>No licenses yet.</i>")
             return
-        table = _pre_table(
-            ["KEY", "PRODUCT", "STATUS", "SEATS", "EXPIRES"],
-            [
-                [r["key"], r["product"], r["status"], r["max_machines"],
-                 _fmt_date(r["expires_at"])]
-                for r in rows
-            ],
+        await reply(update, f"<b>Recent licenses</b> <i>({len(rows)})</i>\n{_list_table(rows)}")
+
+    @admin
+    async def cmd_find(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        if not ctx.args:
+            await reply(update, "<b>Usage:</b> <code>/find &lt;query&gt;</code>")
+            return
+        query = " ".join(ctx.args).strip()
+        rows = await db.find_licenses(query, limit=20)
+        if not rows:
+            await reply(update, f"<i>No matches for</i> <code>{_esc(query)}</code>")
+            return
+        await reply(
+            update,
+            f"<b>Matches</b> <i>({len(rows)})</i> for <code>{_esc(query)}</code>\n"
+            + _list_table(rows),
         )
-        await reply(update, f"<b>Recent licenses</b> <i>({len(rows)})</i>\n{table}")
 
     async def _need_key(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> str | None:
         if not ctx.args:
@@ -220,11 +283,7 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
             return None
         return ctx.args[0]
 
-    @admin
-    async def cmd_info(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        key = await _need_key(update, ctx)
-        if not key:
-            return
+    async def _send_info(update: Update, key: str) -> None:
         lic = await db.get_license(key)
         if not lic:
             await reply(update, "<i>Not found.</i>")
@@ -244,15 +303,46 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
             ("unique machines", s["distinct_machines"]),
             ("last call", _fmt_dt(s["last_seen"]) if s["last_seen"] else "-"),
         ])
-        await reply(update, text)
+        await reply(update, text, keyboard=_info_keyboard(key))
+
+    @admin
+    async def cmd_info(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        key = await _need_key(update, ctx)
+        if not key:
+            return
+        await _send_info(update, key)
+
+    @admin
+    async def cmd_note(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        if not ctx.args or len(ctx.args) < 2:
+            await reply(
+                update,
+                "<b>Usage:</b> <code>/note &lt;KEY&gt; &lt;text&gt;</code>\n"
+                "Pass <code>-</code> as text to clear the note.",
+            )
+            return
+        key = ctx.args[0]
+        note = " ".join(ctx.args[1:]).strip()
+        new_value: str | None = None if note == "-" else note
+        ok = await db.set_owner(key, new_value)
+        if not ok:
+            await reply(update, "<i>Not found.</i>")
+            return
+        if new_value is None:
+            await reply(update, "✅ <b>Note cleared</b>")
+        else:
+            await reply(update, f"✅ <b>Note</b> → <code>{_esc(new_value)}</code>")
 
     @admin
     async def cmd_revoke(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         key = await _need_key(update, ctx)
         if not key:
             return
-        ok = await db.set_status(key, "revoked")
-        await reply(update, "✅ <b>Revoked</b>" if ok else "<i>Not found.</i>")
+        await reply(
+            update,
+            f"⚠️ Revoke <code>{_esc(key)}</code>?",
+            keyboard=_confirm_keyboard("revoke", key),
+        )
 
     @admin
     async def cmd_unrevoke(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -261,6 +351,20 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
             return
         ok = await db.set_status(key, "active")
         await reply(update, "✅ <b>Re-enabled</b>" if ok else "<i>Not found.</i>")
+
+    async def _do_extend(key: str, days: int) -> str:
+        if days <= 0:
+            ok = await db.set_expiry(key, None)
+            return "✅ <b>Set to lifetime</b>" if ok else "<i>Not found.</i>"
+        lic = await db.get_license(key)
+        if not lic:
+            return "<i>Not found.</i>"
+        base = max(int(time.time()), lic["expires_at"] or 0)
+        new_exp = base + days * 86400
+        ok = await db.set_expiry(key, new_exp)
+        if not ok:
+            return "<i>Failed.</i>"
+        return f"✅ <b>Extended</b> → <code>{_esc(_fmt_dt(new_exp))}</code>"
 
     @admin
     async def cmd_extend(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -273,22 +377,7 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
         except ValueError:
             await reply(update, "<i>days</i> must be a number.")
             return
-        if days <= 0:
-            ok = await db.set_expiry(key, None)
-            msg = "✅ <b>Set to lifetime</b>" if ok else "<i>Not found.</i>"
-        else:
-            lic = await db.get_license(key)
-            if not lic:
-                await reply(update, "<i>Not found.</i>")
-                return
-            base = max(int(time.time()), lic["expires_at"] or 0)
-            new_exp = base + days * 86400
-            ok = await db.set_expiry(key, new_exp)
-            msg = (
-                f"✅ <b>Extended</b> → <code>{_esc(_fmt_dt(new_exp))}</code>"
-                if ok else "<i>Failed.</i>"
-            )
-        await reply(update, msg)
+        await reply(update, await _do_extend(key, days))
 
     @admin
     async def cmd_seats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -306,6 +395,12 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
         ok = await db.set_max_machines(key, n)
         await reply(update, f"✅ <b>Seats</b> → <code>{n}</code>" if ok else "<i>Not found.</i>")
 
+    async def _do_reset_all(key: str) -> str:
+        acts = await db.list_activations(key)
+        for a in acts:
+            await db.remove_activation(key, a["machine_id"])
+        return f"✅ <b>Reset</b> {len(acts)} activation(s)"
+
     @admin
     async def cmd_reset(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not ctx.args:
@@ -320,17 +415,64 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
             )
             return
         acts = await db.list_activations(key)
-        for a in acts:
-            await db.remove_activation(key, a["machine_id"])
-        await reply(update, f"✅ <b>Reset</b> {len(acts)} activation(s)")
+        if not acts:
+            await reply(update, "<i>No activations to reset.</i>")
+            return
+        await reply(
+            update,
+            f"⚠️ Reset all <b>{len(acts)}</b> activation(s) on <code>{_esc(key)}</code>?",
+            keyboard=_confirm_keyboard("reset", key),
+        )
 
     @admin
     async def cmd_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         key = await _need_key(update, ctx)
         if not key:
             return
-        ok = await db.delete_license(key)
-        await reply(update, "✅ <b>Deleted</b>" if ok else "<i>Not found.</i>")
+        await reply(
+            update,
+            f"⚠️ <b>Delete</b> <code>{_esc(key)}</code> permanently?",
+            keyboard=_confirm_keyboard("delete", key),
+        )
+
+    @admin
+    async def cmd_backup(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        msg = update.effective_message
+        if not msg:
+            return
+        # Snapshot DB to a temp file using SQLite's backup API for consistency.
+        try:
+            import sqlite3
+
+            tmp_dir = tempfile.mkdtemp()
+            ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d-%H%M%S")
+            out_path = os.path.join(tmp_dir, f"licenses-{ts}.db")
+            src = sqlite3.connect(db.path)
+            try:
+                dst = sqlite3.connect(out_path)
+                try:
+                    src.backup(dst)
+                finally:
+                    dst.close()
+            finally:
+                src.close()
+            size_kb = os.path.getsize(out_path) / 1024
+            await msg.reply_document(
+                document=open(out_path, "rb"),
+                filename=os.path.basename(out_path),
+                caption=f"📦 SQLite snapshot · {size_kb:.1f} KB",
+            )
+        except Exception as exc:  # noqa: BLE001
+            await reply(update, f"<i>Backup failed:</i> <code>{_esc(exc)}</code>")
+            return
+        finally:
+            try:
+                if 'out_path' in locals() and os.path.exists(out_path):
+                    os.remove(out_path)
+                if 'tmp_dir' in locals() and os.path.exists(tmp_dir):
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+            except Exception:  # noqa: BLE001
+                pass
 
     # --- log & stats ---
     def _events_table(events: list[dict]) -> str:
@@ -435,20 +577,92 @@ def build_application(settings: Settings, db: DB) -> tuple[Application, Notifier
         await notifier.set_muted(False)
         await reply(update, "🔔 <b>Notifications on</b>")
 
+    # --- callback queries (inline buttons) ---
+    async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        q = update.callback_query
+        if not q:
+            return
+        user = update.effective_user
+        if not user or user.id not in settings.admin_ids:
+            await q.answer("Access denied", show_alert=True)
+            return
+        data = q.data or ""
+        await q.answer()
+
+        if data == "cancel":
+            await q.edit_message_text("✖️ <i>Cancelled.</i>", parse_mode=ParseMode.HTML)
+            return
+
+        # Format: act:<action>:<key>  → ask for confirmation (or do safe action)
+        # Format: do:<action>:<key>   → execute confirmed action
+        parts = data.split(":", 2)
+        if len(parts) != 3:
+            return
+        prefix, action, key = parts
+
+        if prefix == "act":
+            if action == "unrevoke":
+                ok = await db.set_status(key, "active")
+                await q.edit_message_text(
+                    "✅ <b>Re-enabled</b>" if ok else "<i>Not found.</i>",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+            if action == "extend30":
+                msg = await _do_extend(key, 30)
+                await q.edit_message_text(msg, parse_mode=ParseMode.HTML)
+                return
+            # Destructive: ask for confirmation
+            confirm_action = {
+                "revoke": "revoke",
+                "reset": "reset",
+                "delete": "delete",
+            }.get(action)
+            if not confirm_action:
+                return
+            label = {
+                "revoke": "Revoke",
+                "reset": "Reset all activations on",
+                "delete": "Delete (permanent)",
+            }[confirm_action]
+            await q.edit_message_text(
+                f"⚠️ {label} <code>{_esc(key)}</code>?",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_confirm_keyboard(confirm_action, key),
+            )
+            return
+
+        if prefix == "do":
+            if action == "revoke":
+                ok = await db.set_status(key, "revoked")
+                msg = "✅ <b>Revoked</b>" if ok else "<i>Not found.</i>"
+            elif action == "reset":
+                msg = await _do_reset_all(key)
+            elif action == "delete":
+                ok = await db.delete_license(key)
+                msg = "✅ <b>Deleted</b>" if ok else "<i>Not found.</i>"
+            else:
+                msg = "<i>Unknown action.</i>"
+            await q.edit_message_text(msg, parse_mode=ParseMode.HTML)
+
     app.add_handler(CommandHandler(["start", "help"], cmd_start))
     app.add_handler(CommandHandler("new", cmd_new))
     app.add_handler(CommandHandler("list", cmd_list))
+    app.add_handler(CommandHandler("find", cmd_find))
     app.add_handler(CommandHandler("info", cmd_info))
+    app.add_handler(CommandHandler("note", cmd_note))
     app.add_handler(CommandHandler("revoke", cmd_revoke))
     app.add_handler(CommandHandler("unrevoke", cmd_unrevoke))
     app.add_handler(CommandHandler("extend", cmd_extend))
     app.add_handler(CommandHandler("seats", cmd_seats))
     app.add_handler(CommandHandler("reset", cmd_reset))
     app.add_handler(CommandHandler("delete", cmd_delete))
+    app.add_handler(CommandHandler("backup", cmd_backup))
     app.add_handler(CommandHandler("log", cmd_log))
     app.add_handler(CommandHandler("errors", cmd_errors))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("mute", cmd_mute))
     app.add_handler(CommandHandler("unmute", cmd_unmute))
+    app.add_handler(CallbackQueryHandler(on_callback))
 
     return app, notifier

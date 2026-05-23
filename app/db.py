@@ -149,6 +149,35 @@ class DB:
             await conn.commit()
             return cur.rowcount > 0
 
+    async def set_owner(self, key: str, owner: str | None) -> bool:
+        async with self._connect() as conn:
+            cur = await conn.execute(
+                "UPDATE licenses SET owner=? WHERE key=?", (owner, key)
+            )
+            await conn.commit()
+            return cur.rowcount > 0
+
+    async def find_licenses(self, query: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        like = f"%{query}%"
+        async with self._connect() as conn:
+            conn.row_factory = aiosqlite.Row
+            cur = await conn.execute(
+                "SELECT key, product, owner, status, max_machines, expires_at, created_at "
+                "FROM licenses WHERE key LIKE ? OR product LIKE ? OR owner LIKE ? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (like, like, like, limit),
+            )
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def ping(self) -> bool:
+        try:
+            async with self._connect() as conn:
+                cur = await conn.execute("SELECT 1")
+                row = await cur.fetchone()
+                return row is not None
+        except Exception:  # noqa: BLE001
+            return False
+
     async def delete_license(self, key: str) -> bool:
         async with self._connect() as conn:
             await conn.execute("PRAGMA foreign_keys=ON")
